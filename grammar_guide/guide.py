@@ -89,7 +89,11 @@ def contains_stop_sequence(
     return torch.unique(stacked, dim=0).shape != stacked.shape
 
 
-def forward_pass_no_sample(model: AutoModelForCausalLM, input_ids, past_key_values: Optional[DynamicCache] = None):
+def forward_pass_no_sample(
+    model: AutoModelForCausalLM,
+    input_ids,
+    past_key_values: Optional[DynamicCache] = None,
+):
     """Used to pass prompts (i.e. bits of text where we don't care about the logits)"""
     return model.forward(
         input_ids=input_ids,
@@ -156,7 +160,7 @@ def feed_str_to_parser(parser: Lark, p: InteractiveParser, s: str):
             else:
                 raise InvalidTokenState(f"Token {s} is not in accept states")
     except lark_exceptions.UnexpectedCharacters:
-        raise InvalidTokenState(f"Token {s} is invalid")
+        raise InvalidTokenState(f"Token {s} is invalid") from None
 
 
 @torch.inference_mode
@@ -296,8 +300,7 @@ def guide(
     corrections = []
     start = time.time()
     past_key_values = forward_pass_no_sample(
-        model=model,
-        input_ids=tokens[: len(prompt_input_ids)].unsqueeze(0)
+        model=model, input_ids=tokens[: len(prompt_input_ids)].unsqueeze(0)
     )
     start_pos = len(prompt_input_ids)
     while num_correction_left > 0 and ret_prediction is None:
@@ -424,7 +427,7 @@ def guide(
             past_key_values = forward_pass_no_sample(
                 model=model,
                 input_ids=selected_candidate_ids,
-                past_key_values=past_key_values
+                past_key_values=past_key_values,
             )
             # Now, setup generation from those new candidate_ids we added
             start_pos = len(valid_completion_ids) + len(selected_candidate_ids)
