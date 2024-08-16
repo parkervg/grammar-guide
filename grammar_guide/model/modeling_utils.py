@@ -109,6 +109,8 @@ def contains_stop_sequence(
         pad_token_id = 0
         # The sequence ends in [2, 3], which is a pattern in `stop_at_ids`
         assert contains_stop_sequence(tokens, stop_at_ids, pad_token_id) == True
+    TODO:
+        - handle case when tokens may begin with stop_at prefix
     """
     # Length of longest stop token
     T = stop_at_ids.shape[-1]

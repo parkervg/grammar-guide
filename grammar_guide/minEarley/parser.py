@@ -2,8 +2,7 @@ import re
 from typing import List, Any, Collection
 from dataclasses import dataclass
 
-import exrex
-from lark.lexer import TerminalDef, PatternRE, PatternStr, Pattern
+from lark.lexer import TerminalDef, PatternRE, PatternStr
 from lark.load_grammar import load_grammar
 
 from .earley import Parser
@@ -87,61 +86,33 @@ class EarleyParser:
         e,
         candidate_limit: int,
     ):
-        def regex_to_candidates(regex):
-            candidates = set()
-            if exrex.count(regex) > 64:
-                return candidates
-                # if candidate_overflow_strategy == 'ignore':
-                #     logger.warning(
-                #         f"regex {regex} has too many candidates. ignoring this pattern"
-                #     )
-                # return regex
-            # TODO: why is exrex limit not working here?
-            # I think 'limit' matches the unique re patterns that are grabbed,
-            # Not actual string generations
-            # count = 0
-            for candidate in exrex.generate(regex, limit=candidate_limit):
-                candidates.add(candidate)
-                # count += 1
-                # if candidate_limit <= count:
-                #     break
-            return candidates
-
-        def pattern_to_candidates(pattern: Pattern):
-            candidates = set()
-            has_re = False
-            if isinstance(pattern, PatternStr):
-                candidates.add(pattern.value)
-            elif isinstance(pattern, PatternRE):
-                # candidates.update([pattern.value])
-                has_re = True
-                candidates.update(regex_to_candidates(pattern.value))
-            return candidates, has_re
-
-        has_re = False
+        candidate_terminals = set()
+        regex_terminals = set()
         if isinstance(e, UnexpectedCharacters):
-            candidate_terminals = set()
             for terminal_name in e.allowed:
                 terminal_def = self.lexer_conf.terminals_by_name[terminal_name]
-                new_candidates, _has_re = pattern_to_candidates(terminal_def.pattern)
-                has_re = _has_re or has_re
-                candidate_terminals.update(new_candidates)
+                pattern = terminal_def.pattern
+                if isinstance(pattern, PatternStr):
+                    candidate_terminals.add(pattern.value)
+                elif isinstance(pattern, PatternRE):
+                    regex_terminals.update([pattern.value])
             prefix = e.parsed_prefix
 
-            # TODO: handle case where no candidate is found
-            if len(candidate_terminals) == 0:
-                candidate_terminals = {""}
-
         elif isinstance(e, UnexpectedEOF):
-            candidate_terminals = set()
             for terminal_name in e.expected:
                 terminal_def = self.lexer_conf.terminals_by_name[terminal_name]
-                new_candidates, _has_re = pattern_to_candidates(terminal_def.pattern)
-                has_re = _has_re or has_re
-                candidate_terminals.update(new_candidates)
-
-            assert len(candidate_terminals) > 0
+                pattern = terminal_def.pattern
+                if isinstance(pattern, PatternStr):
+                    candidate_terminals.add(pattern.value)
+                elif isinstance(pattern, PatternRE):
+                    regex_terminals.update([pattern.value])
             prefix = e.text
         else:
             raise e
-        return (prefix, list(candidate_terminals), has_re, e.pos_in_stream)
+        # assert any(x for x in [len(candidate_terminals) > 0, len(regex_terminals) > 0])
+        return (
+            prefix,
+            list(candidate_terminals),
+            list(regex_terminals),
+            e.pos_in_stream,
+        )

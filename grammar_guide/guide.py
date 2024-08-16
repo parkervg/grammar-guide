@@ -1,8 +1,9 @@
-import random
 import time
 from typing import Optional, Tuple, Set, Any
 from collections.abc import Collection
 
+import guidance
+import re
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from lark import Lark
 from lark import exceptions as lark_exceptions
@@ -36,7 +37,7 @@ def obtain_correction_pairs(
     prediction: str,
     parser: EarleyParser,
     candidate_limit: int,
-) -> Tuple[str, Set[str], int]:
+) -> Tuple[str, Set[str], Set[str], int]:
     """
     Returns a list of candidates in the form of (prefix, candidates, error_position_index).
     """
@@ -107,7 +108,7 @@ def guide(
     prompt_ids_length = prompt_input_ids.shape[0]
     total_len = min(
         model.config.max_position_embeddings,
-        128
+        512
         # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
@@ -117,6 +118,7 @@ def guide(
     prefix = seed_str or ""
     ret_prediction, initial_prediction, selected_candidate = None, None, None
     corrections = []
+    curr_p, prev_p = 0, 0
     start = time.time()
 
     start_pos = len(prompt_input_ids)
@@ -137,21 +139,34 @@ def guide(
     while num_correction_left > 0 and ret_prediction is None:
         processors = []
         if token_healing:
+            non_pad_tokens = tokens[tokens != tokenizer.pad_token_id]
             healer = TokenHealingLogitsProcessor(
                 guide_model,
                 guide_model.model.config.vocab_size,
-                tokens[tokens != tokenizer.pad_token_id],
+                non_pad_tokens,
             )
             healed_token_ids = healer.healed_token_ids
             if len(healed_token_ids) > 0:
-                # if tokens[start_pos] == tokenizer.pad_token_id:
                 # Reset back, depending on length of healed tokens
-                tokens[start_pos + 1 - len(healed_token_ids) :] = tokenizer.pad_token_id
-                start_pos -= 1 + len(healed_token_ids)
-                past_key_values = m.prune_kv_cache(
-                    past_key_values=past_key_values,
-                    up_to=start_pos - len(healed_token_ids) + 1,
-                )
+                if tokens[start_pos] == tokenizer.pad_token_id:
+                    tokens[
+                        non_pad_tokens.shape[-1]
+                        - len(healed_token_ids) : non_pad_tokens.shape[-1]
+                    ] = tokenizer.pad_token_id
+                    start_pos -= len(healed_token_ids)
+                    past_key_values = m.prune_kv_cache(
+                        past_key_values=past_key_values,
+                        up_to=non_pad_tokens.shape[-1] - len(healed_token_ids),
+                    )
+                else:
+                    tokens[
+                        start_pos + 1 - len(healed_token_ids) :
+                    ] = tokenizer.pad_token_id
+                    start_pos -= 1 + len(healed_token_ids)
+                    past_key_values = m.prune_kv_cache(
+                        past_key_values=past_key_values,
+                        up_to=start_pos - len(healed_token_ids) + 1,
+                    )
                 processors.append(healer)
         tokens, new_token_pos, past_key_values = m._gen_loop(
             model=model,
@@ -166,47 +181,53 @@ def guide(
             top_p=top_p,
             temperature=temperature,
         )
-        # tokens[tokens != tokenizer.pad_token_id].shape == past_key_values.key_cache[0].shape[-2] + 1
         generated_token_ids = tokens[prompt_ids_length:]
         program_prediction: str = tokenizer.decode(
             generated_token_ids, skip_special_tokens=True
         )
-        # program_prediction = prefix + residual_program_prediction
         if validate_program(program_prediction, parser):
             ret_prediction = program_prediction
             continue
-        prefix, candidates, has_re, pos_in_stream = obtain_correction_pairs(
+        prefix, str_candidates, re_candidates, pos_in_stream = obtain_correction_pairs(
             prediction=program_prediction,
             parser=parser,
             candidate_limit=64,
         )
-        if len(candidates) == 0:
-            logger.debug(
-                Fore.LIGHTMAGENTA_EX + "No correction pairs found" + Fore.RESET
-            )
-            return prefix
-        elif len(candidates) == 1 and not has_re:
-            # If we only have 1 candidate, no need to call draft_gen
-            selected_candidate = candidates.pop()
+        if all(len(x) == 0 for x in [str_candidates, re_candidates]):
+            logger.debug("No candidates left")
+            ret_prediction = prefix
+            continue
+        if len(str_candidates) == 1 and len(re_candidates) == 0:
+            # If we only have 1 string candidate, no need to call draft_gen
+            selected_candidate = str_candidates.pop()
             correction_type = "single_candidate"
         else:
-            if draft_model:
-                selected_candidate = (
-                    draft_model
-                    + prompt
-                    + program_prediction
-                    + guidance.capture(
-                        guidance.with_temperature(
-                            guidance.select(options=candidates), "res", 0.0
-                        )
-                    )
+            # if draft_model:
+            make_regex_pred = lambda pattern: (
+                draft_model
+                + prompt
+                + program_prediction
+                + guidance.capture(
+                    guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
+                    "res",
                 )
-                # Generate the continuation candidate with the highest probability
-                if False:
-                    # TODO: implement own 'select' logic so we can reuse kv cache
-                    pass
-            else:
-                selected_candidate = random.choice(candidates)
+            )["res"]
+            from pyformlang.regular_expression.regex_objects import MisformedRegexError
+
+            try:
+                selected_candidate = make_regex_pred(
+                    "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+                )
+            except MisformedRegexError:
+                selected_candidate = make_regex_pred(
+                    "|".join([re.escape(s) for s in str_candidates])
+                )
+            # Generate the continuation candidate with the highest probability
+            if False:
+                # TODO: implement own 'select' logic so we can reuse kv cache
+                pass
+            # else:
+            #     selected_candidate = random.choice(candidates)
             correction_type = "draft_gen"
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
@@ -216,7 +237,6 @@ def guide(
             + selected_candidate
             + (program_prediction[pos_in_stream:] if pos_in_stream != -1 else "")
         )
-        # print(f"Selected candidate {selected_candidate}")
         partial_program_prediction = prefix + selected_candidate
         if validate_program(inserted_candidate_prediction, parser):
             ret_prediction = inserted_candidate_prediction
@@ -254,9 +274,6 @@ def guide(
                     type=correction_type,
                 )
             )
-            # This happens if pos_in_stream occurs within a token
-            # if past_key_values.key_cache[0].shape[2] > len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']):
-            # assert len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']) == past_key_values.key_cache[0].shape[2]
             selected_candidate_ids = tokenizer(
                 selected_candidate, return_tensors="pt", add_special_tokens=False
             )["input_ids"]
@@ -272,6 +289,7 @@ def guide(
                     + selected_candidate_ids.shape[-1]
                 ] = selected_candidate_ids
                 start_pos = prompt_ids_length + total_generated_tokens
+                # start_pos = prompt_ids_length + total_generated_tokens + (selected_candidate_ids.shape[-1] - 1)
             else:
                 # Align the token id breakpoint with the stop position in the prefix
                 # prefix = ' {\n "name": "Joseph Smith, 3"\n '
@@ -284,31 +302,37 @@ def guide(
                 ]
                 # TODO: the alignnment below breaks with token healing, since it changes
                 #   the tokens in our runnng `tokens` array
-                for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
-                    if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
+                for curr_p in range(
+                    max(0, prev_p - 5),
+                    max([predicted_ids.shape[-1], prefix_ids.shape[-1]]),
+                ):
+                    if (
+                        curr_p >= prefix_ids.shape[-1]
+                        or curr_p >= predicted_ids.shape[-1]
+                    ):
                         break
-                    prefix_id = prefix_ids[p]
-                    predicted_id = predicted_ids[p]
+                    prefix_id = prefix_ids[curr_p]
+                    predicted_id = predicted_ids[curr_p]
                     if prefix_id != predicted_id:
                         break
-                assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
-                    predicted_ids[:p]
+                assert tokenizer.decode(prefix_ids[:curr_p]) == tokenizer.decode(
+                    predicted_ids[:curr_p]
                 )
                 # Cut off our kv cache up to the valid grammar prefix
                 past_key_values = m.prune_kv_cache(
                     past_key_values=past_key_values,
-                    up_to=prompt_ids_length + p,
+                    up_to=prompt_ids_length + curr_p,
                 )
                 # Clear tokens after valid_completion_id index
-                tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
-                diff = len(prefix_ids) - p
+                tokens[prompt_ids_length + curr_p :] = tokenizer.pad_token_id
+                diff = len(prefix_ids) - curr_p
                 if diff > 0:
                     tokens[
-                        prompt_ids_length + p : prompt_ids_length + p + diff
+                        prompt_ids_length + curr_p : prompt_ids_length + curr_p + diff
                     ] = prefix_ids[-diff:]
                 if (
                     selected_candidate_ids.shape[-1]
-                    > tokens[prompt_ids_length + p :].shape[0]
+                    > tokens[prompt_ids_length + curr_p :].shape[0]
                 ):
                     raise ValueError(
                         f"Trying to insert candidate {selected_candidate}, but it is too long!"
@@ -316,18 +340,19 @@ def guide(
                 # Update tokens with our selected candidate id
                 tokens[
                     prompt_ids_length
-                    + p
+                    + curr_p
                     + diff : prompt_ids_length
-                    + p
+                    + curr_p
                     + diff
                     + selected_candidate_ids.shape[-1]
                 ] = selected_candidate_ids
                 # print(tokenizer.decode(tokens[tokens != tokenizer.pad_token_id]))
-                start_pos = prompt_ids_length + p + 1
+                start_pos = prompt_ids_length + curr_p + 1
+        prev_p = curr_p
         num_correction_left -= 1
-        logger.debug(
-            Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
-        )
+        # logger.debug(
+        #     Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
+        # )
     if ret_prediction is None:
         logger.debug(
             Fore.RED

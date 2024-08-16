@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     from grammar_guide import guide
 
-    model_name_or_path = "HuggingFaceTB/SmolLM-360M"
+    model_name_or_path = "HuggingFaceTB/SmolLM-135M"
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
@@ -39,10 +39,11 @@ if __name__ == "__main__":
             ),
             "lark_grammar_filepath": "./grammars/json.lark",
             "stop_at": ["```"],
+            "seed_str": '{\n\t"name":',
         },
         {
             "prompt": dedent(
-                "Hello, I am your teacher. Today I will write you a SQL query demonstrating `INNER JOIN` and `LIMIT`."
+                "Hello, I am your teacher. Today I will write you a SQL query demonstrating `INNER JOIN` and `LIMIT`. It will translate the following question: Show me the top 5 students with a grade above 0.5\n\n"
             ),
             "lark_grammar_filepath": "./grammars/sql.lark",
             "seed_str": "SELECT",
@@ -50,7 +51,7 @@ if __name__ == "__main__":
         },
     ]
     if True:
-        max_new_tokens = 10
+        max_new_tokens = 200
         max_grammar_corrections = 10
         # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
         start = time.time()
@@ -65,7 +66,7 @@ if __name__ == "__main__":
                 ),
                 max_grammar_corrections=max_grammar_corrections,
                 max_new_tokens=max_new_tokens,
-                temperature=0.0,
+                temperature=0.8,
             )
             for c in res.correction_log:
                 print("Original:")
