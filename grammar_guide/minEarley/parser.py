@@ -89,12 +89,13 @@ class EarleyParser:
     ):
         def regex_to_candidates(regex):
             candidates = set()
-            if exrex.count(regex) > 32:
+            if exrex.count(regex) > 64:
+                return candidates
                 # if candidate_overflow_strategy == 'ignore':
                 #     logger.warning(
                 #         f"regex {regex} has too many candidates. ignoring this pattern"
                 #     )
-                return regex
+                # return regex
             # TODO: why is exrex limit not working here?
             # I think 'limit' matches the unique re patterns that are grabbed,
             # Not actual string generations

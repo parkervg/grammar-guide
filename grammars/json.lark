@@ -9,7 +9,7 @@
       | "null"             -> null
 
 array  : "[" [value ("," value)*] "]"
-object : "{" [pair ("," pair)*] "}"
+object : "{" [pair ("," pair)~5] "}"
 pair   : string ":" value
 
 inner: /([^"]|\\\")+/ |

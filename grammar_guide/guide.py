@@ -1,124 +1,25 @@
 import random
 import time
-from typing import Optional, List, Tuple, Set, Any
+from typing import Optional, Tuple, Set, Any
 from collections.abc import Collection
 
-import torch
-import torch.nn.functional as F
-from transformers import AutoModelForCausalLM, AutoTokenizer, DynamicCache
+from transformers import AutoModelForCausalLM, AutoTokenizer
 from lark import Lark
 from lark import exceptions as lark_exceptions
 from lark.parsers.lalr_interactive_parser import InteractiveParser
 from colorama import Fore
 
+from .model import modeling_utils as m
+from .model.logits_processors import TokenHealingLogitsProcessor
 from .minEarley.parser import EarleyParser
 from ._logger import logger
 from .typedefs import GrammarGuideOutput, Correction
 
+DEVICE = "cpu"
+
 
 class InvalidTokenState(ValueError):
     pass
-
-
-torch.manual_seed(42)
-device = torch.device("cpu")
-
-
-def sample_top_p(probs, p):
-    # https://github.com/meta-llama/llama3/blob/main/llama/generation.py
-    """
-    Perform top-p (nucleus) sampling on a probability distribution.
-
-    Args:
-        probs (torch.Tensor): Probability distribution tensor.
-        p (float): Probability threshold for top-p sampling.
-
-    Returns:
-        torch.Tensor: Sampled token indices.
-
-    Note:
-        Top-p sampling selects the smallest set of tokens whose cumulative probability mass
-        exceeds the threshold p. The distribution is renormalized based on the selected tokens.
-    """
-    probs_sort, probs_idx = torch.sort(probs, dim=-1, descending=True)
-    probs_sum = torch.cumsum(probs_sort, dim=-1)
-    mask = probs_sum - probs_sort > p
-    probs_sort[mask] = 0.0
-    probs_sort.div_(probs_sort.sum(dim=-1, keepdim=True))
-    next_token = torch.multinomial(probs_sort, num_samples=1)
-    next_token = torch.gather(probs_idx, -1, next_token)
-    return next_token
-
-
-def contains_stop_sequence(
-    tokens: torch.tensor, stop_at_ids: torch.tensor, pad_token_id: int
-) -> bool:
-    """
-    Given a `token` array of shape (max_seq_len,), returns `True` if `tokens` ends in any of the
-    row-wise entries of `stop_at_ids` of shape (batch_size, max_seq_len), and `False` if not.
-
-    Example:
-        tokens = torch.tensor(
-            [1, 2, 3, 0, 0, 0]
-        )
-        stop_at_ids = torch.tensor(
-            [
-                [2, 3, 0, 0],
-                [5, 6, 7, 8]
-            ]
-        )
-        pad_token_id = 0
-        # The sequence ends in [2, 3], which is a pattern in `stop_at_ids`
-        assert contains_stop_sequence(tokens, stop_at_ids, pad_token_id) == True
-    """
-    # Length of longest stop token
-    T = stop_at_ids.shape[-1]
-    non_pad_tokens = tokens[tokens != pad_token_id]
-    s = F.pad(
-        non_pad_tokens[-T:],
-        (0, max(T - non_pad_tokens.shape[0], 0)),
-        mode="constant",
-        value=pad_token_id,
-    ).expand(T, T)
-    arange1 = torch.arange(T).view((T, 1)).repeat((1, T))
-    arange2 = ((arange1 + torch.arange(T)) % T).T
-    s = torch.gather(s, -1, arange2.T)
-    mask = torch.fliplr(torch.ones_like(s).tril().T)
-    s = torch.unique(s * mask, dim=0)
-    stacked = torch.cat((s, stop_at_ids), dim=0)
-    return torch.unique(stacked, dim=0).shape != stacked.shape
-
-
-def forward_pass_no_sample(
-    model: AutoModelForCausalLM,
-    input_ids,
-    past_key_values: Optional[DynamicCache] = None,
-):
-    """Used to pass prompts (i.e. bits of text where we don't care about the logits)"""
-    return model.forward(
-        input_ids=input_ids,
-        past_key_values=past_key_values or DynamicCache(),
-        use_cache=True,
-        output_attentions=False,
-        output_hidden_states=False,
-    ).past_key_values
-
-
-def prune_kv_cache(past_key_values: DynamicCache, up_to: int) -> DynamicCache:
-    """Selects a subset of the key-value cache to use in a new generation.
-
-    `past_key_values` has two attributes we care about, `key_cache` and `value_cache`.
-    Both are tuples of len `num_hidden_layers`, where each entry is a tensor
-    with the shape (batch_size, num_key_value_heads, seq_len, ??)
-    # TODO: the last dimension is 64, not sure where this comes from)
-    """
-    _past_key_values = DynamicCache()
-    _past_key_values.key_cache = [t[..., :up_to, :] for t in past_key_values.key_cache]
-    _past_key_values.value_cache = [
-        t[..., :up_to, :] for t in past_key_values.value_cache
-    ]
-    _past_key_values._seen_tokens = _past_key_values.key_cache[0].shape[2]
-    return _past_key_values
 
 
 def validate_program(prediction: str, parser: EarleyParser) -> bool:
@@ -163,98 +64,17 @@ def feed_str_to_parser(parser: Lark, p: InteractiveParser, s: str):
         raise InvalidTokenState(f"Token {s} is invalid") from None
 
 
-@torch.inference_mode
-def _gen_loop(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
-    tokens: torch.tensor,
-    past_key_values: DynamicCache,
-    start_pos: int,
-    total_len: int,
-    stop_at_ids: torch.tensor,
-    choices: Optional[List[str]] = None,
-    max_new_tokens: Optional[int] = 32,
-    top_p: float = 0.9,
-    temperature: float = 0.6,
-):
-    prev_pos = start_pos - 1
-    eos_reached = torch.tensor([False], device=device)
-    # p = parser.parse_interactive() if parser else None
-    for new_token_pos, cur_pos in enumerate(range(start_pos, total_len)):
-        # if p:
-        #     # If under our grammar there's only 1 choice available, skip ahead
-        #     if len(p.accepts()) == 1:
-        #         singleton_accepted: TerminalDef = parser.get_terminal(p.accepts().pop())
-        #         if isinstance(singleton_accepted.pattern, PatternStr):
-        #             forced_str = singleton_accepted.pattern.value
-        #             print("LARK MATCH")
-        #             print(forced_str)
-        #             force_new_token_ids = tokenizer(forced_str, return_tensors="pt", padding=False, add_special_tokens=False)['input_ids']
-        #             past_key_values = forward_pass_no_sample(
-        #                 force_new_token_ids,
-        #                 past_key_values=past_key_values
-        #             )
-        #             for i, tok_id in enumerate(force_new_token_ids):
-        #                 tokens[cur_pos+i] = tok_id
-        #             feed_str_to_parser(parser, p, forced_str)
-        # Skip, if we've already applied a forced token
-        # if tokens[cur_pos] != tokenizer.pad_token_id:
-        #     continue
-        # https://huggingface.co/docs/transformers/main/en/model_doc/llama#transformers.LlamaModel.forward.past_key_values
-        # If past_key_values are used, the user can optionally input only the last input_ids
-        # (those that don’t have their past key value states given to this model)
-        # of shape (batch_size, 1) instead of all input_ids of shape (batch_size, sequence_length).
-        model_output = model.forward(
-            input_ids=tokens[prev_pos:cur_pos].unsqueeze(0),
-            past_key_values=past_key_values,
-            use_cache=True,
-            output_attentions=False,
-            output_hidden_states=False,
-        )
-        # len(cache) == model.config.num_hidden_layers
-        # Each entry in cache is tuple of (key, value)
-        past_key_values = model_output.past_key_values
-        logits = model_output.logits.squeeze(0)
-        last_logits = logits[-1, :]
-        if temperature > 0:
-            probs = torch.softmax(last_logits / temperature, dim=-1)
-            next_token = sample_top_p(probs, top_p)
-        else:
-            next_token = torch.argmax(last_logits, dim=-1)
-        tokens[cur_pos] = next_token
-        # if p:
-        #     try:
-        #         feed_str_to_parser(parser, p, tokenizer.decode(next_token))
-        #     except InvalidTokenState as error:
-        #         # TODO: either backtrack and try to parse with constraints,
-        #         # Or continue and see if the model can recover
-        #         # print(error)
-        #         pass
-        eos_reached |= (new_token_pos >= max_new_tokens) | (
-            next_token == tokenizer.eos_token_id
-        )
-        if not eos_reached and stop_at_ids is not None:
-            eos_reached |= contains_stop_sequence(
-                tokens=tokens[start_pos:],
-                stop_at_ids=stop_at_ids,
-                pad_token_id=tokenizer.pad_token_id,
-            )
-        prev_pos = cur_pos
-        if eos_reached or cur_pos + 1 == tokens.shape[0]:
-            break
-    return tokens[start_pos:], new_token_pos, past_key_values
-
-
 def guide(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
     prompt: str,
-    draft_model: Optional[Any],
+    draft_model: Optional[Any] = None,
     seed_str: Optional[str] = None,
     lark_grammar_str: Optional[str] = None,
     lark_grammar_filepath: Optional[str] = None,
     max_grammar_corrections: int = 3,
     stop_at: Collection[str] = None,
+    token_healing: Optional[bool] = True,
     top_p: float = 0.9,
     temperature: float = 0.6,
     max_new_tokens: int = 32,
@@ -270,6 +90,7 @@ def guide(
         start="start",
         keep_all_tokens=True,
     )
+    guide_model = m.Model(model=model, tokenizer=tokenizer)
     # https://huggingface.co/docs/transformers/llm_tutorial#wrong-padding-side
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -282,33 +103,62 @@ def guide(
         stop_at_ids = stop_at_tokenizer_out["input_ids"]
     prompt_input_ids = tokenizer(prompt, return_tensors="pt", padding=True)[
         "input_ids"
-    ].squeeze()
+    ].squeeze(0)
+    prompt_ids_length = prompt_input_ids.shape[0]
     total_len = min(
         model.config.max_position_embeddings,
-        prompt_input_ids.shape[0] + (max_new_tokens * max_grammar_corrections),
+        128
+        # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
     )
-    tokens = torch.full(
-        (total_len,),
-        tokenizer.pad_token_id,
-        dtype=torch.long,
-        device=device,
-    )
+    tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
     num_correction_left = max_grammar_corrections
-    partial_program_prediction = seed_str or ""
-    ret_prediction, initial_prediction = None, None
+    # partial_program_prediction = seed_str or ""
+    prefix = seed_str or ""
+    ret_prediction, initial_prediction, selected_candidate = None, None, None
     corrections = []
     start = time.time()
-    past_key_values = forward_pass_no_sample(
-        model=model, input_ids=tokens[: len(prompt_input_ids)].unsqueeze(0)
-    )
+
     start_pos = len(prompt_input_ids)
+    if prefix:
+        prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
+            "input_ids"
+        ].squeeze(0)
+        tokens[
+            len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
+        ] = prefix_ids
+        start_pos += len(prefix_ids)
+
+    # Don't pass the last token of prompt here - we use it for generation
+    past_key_values = m.forward_pass_no_sample(
+        model=model,
+        input_ids=tokens[tokens != tokenizer.pad_token_id][:-1].unsqueeze(0),
+    )
     while num_correction_left > 0 and ret_prediction is None:
-        tokens, new_token_pos, past_key_values = _gen_loop(
+        processors = []
+        if token_healing:
+            healer = TokenHealingLogitsProcessor(
+                guide_model,
+                guide_model.model.config.vocab_size,
+                tokens[tokens != tokenizer.pad_token_id],
+            )
+            healed_token_ids = healer.healed_token_ids
+            if len(healed_token_ids) > 0:
+                # if tokens[start_pos] == tokenizer.pad_token_id:
+                # Reset back, depending on length of healed tokens
+                tokens[start_pos + 1 - len(healed_token_ids) :] = tokenizer.pad_token_id
+                start_pos -= 1 + len(healed_token_ids)
+                past_key_values = m.prune_kv_cache(
+                    past_key_values=past_key_values,
+                    up_to=start_pos - len(healed_token_ids) + 1,
+                )
+                processors.append(healer)
+        tokens, new_token_pos, past_key_values = m._gen_loop(
             model=model,
             tokenizer=tokenizer,
             tokens=tokens,
             past_key_values=past_key_values,
+            processors=processors,
             start_pos=start_pos,
             total_len=total_len,
             stop_at_ids=stop_at_ids,
@@ -316,11 +166,12 @@ def guide(
             top_p=top_p,
             temperature=temperature,
         )
-        residual_program_prediction: str = tokenizer.decode(
-            tokens, skip_special_tokens=True
+        # tokens[tokens != tokenizer.pad_token_id].shape == past_key_values.key_cache[0].shape[-2] + 1
+        generated_token_ids = tokens[prompt_ids_length:]
+        program_prediction: str = tokenizer.decode(
+            generated_token_ids, skip_special_tokens=True
         )
-        # This is the representation
-        program_prediction = partial_program_prediction + residual_program_prediction
+        # program_prediction = prefix + residual_program_prediction
         if validate_program(program_prediction, parser):
             ret_prediction = program_prediction
             continue
@@ -357,21 +208,24 @@ def guide(
             else:
                 selected_candidate = random.choice(candidates)
             correction_type = "draft_gen"
-
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
         #   Example: SELECT a b FROM table -> SELECT a, b FROM table
-        inserted_candidate = (
-            prefix + selected_candidate + program_prediction[pos_in_stream:]
+        inserted_candidate_prediction = (
+            prefix
+            + selected_candidate
+            + (program_prediction[pos_in_stream:] if pos_in_stream != -1 else "")
         )
+        # print(f"Selected candidate {selected_candidate}")
         partial_program_prediction = prefix + selected_candidate
-        if validate_program(inserted_candidate, parser):
-            ret_prediction = inserted_candidate
+        if validate_program(inserted_candidate_prediction, parser):
+            ret_prediction = inserted_candidate_prediction
             correction_type += "_middle_fill"
             corrections.append(
                 Correction(
                     original_pred=program_prediction,
                     corrected_pred=ret_prediction,
+                    selected_candidate=selected_candidate,
                     type=correction_type,
                 )
             )
@@ -384,6 +238,7 @@ def guide(
                 Correction(
                     original_pred=program_prediction,
                     corrected_pred=ret_prediction,
+                    selected_candidate=selected_candidate,
                     type=correction_type,
                 )
             )
@@ -395,44 +250,84 @@ def guide(
                 Correction(
                     original_pred=program_prediction,
                     corrected_pred=partial_program_prediction,
+                    selected_candidate=selected_candidate,
                     type=correction_type,
                 )
             )
-            # assert len(tokenizer(prompt + program_prediction)['input_ids']) == past_key_values.key_cache[0].shape[2]
-            valid_completion_ids = tokenizer(
-                program_prediction[:pos_in_stream], add_special_tokens=False
-            )["input_ids"]
-            # Cut off our kv cache up to the valid grammar prefix
-            past_key_values = prune_kv_cache(
-                past_key_values=past_key_values,
-                up_to=len(prompt_input_ids) + len(valid_completion_ids),
-            )
-            # Clear tokens after valid_completion_id index
-            tokens[len(valid_completion_ids) :] = tokenizer.pad_token_id
+            # This happens if pos_in_stream occurs within a token
+            # if past_key_values.key_cache[0].shape[2] > len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']):
+            # assert len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']) == past_key_values.key_cache[0].shape[2]
             selected_candidate_ids = tokenizer(
-                selected_candidate + " ", return_tensors="pt", add_special_tokens=False
+                selected_candidate, return_tensors="pt", add_special_tokens=False
             )["input_ids"]
-            if (
-                selected_candidate_ids.shape[-1]
-                > tokens[len(valid_completion_ids) :].shape[0]
-            ):
-                raise ValueError(
-                    f"Trying to insert candidate {selected_candidate}, but it is too long!"
+            if prefix == program_prediction:
+                # Simple case: insert our candidate ids into the end of the running token array
+                total_generated_tokens = generated_token_ids[
+                    generated_token_ids != tokenizer.pad_token_id
+                ].shape[-1]
+                tokens[
+                    prompt_ids_length
+                    + total_generated_tokens : prompt_ids_length
+                    + total_generated_tokens
+                    + selected_candidate_ids.shape[-1]
+                ] = selected_candidate_ids
+                start_pos = prompt_ids_length + total_generated_tokens
+            else:
+                # Align the token id breakpoint with the stop position in the prefix
+                # prefix = ' {\n "name": "Joseph Smith, 3"\n '
+                # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
+                prefix_ids = tokenizer(
+                    prefix, return_tensors="pt", add_special_tokens=False
+                )["input_ids"].squeeze(0)
+                predicted_ids = tokens[tokens != tokenizer.pad_token_id][
+                    prompt_ids_length:
+                ]
+                # TODO: the alignnment below breaks with token healing, since it changes
+                #   the tokens in our runnng `tokens` array
+                for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
+                    if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
+                        break
+                    prefix_id = prefix_ids[p]
+                    predicted_id = predicted_ids[p]
+                    if prefix_id != predicted_id:
+                        break
+                assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
+                    predicted_ids[:p]
                 )
-            tokens[
-                len(valid_completion_ids) : len(valid_completion_ids)
-                + selected_candidate_ids.shape[-1]
-            ] = selected_candidate_ids
-            # Forward pass with new candidate
-            past_key_values = forward_pass_no_sample(
-                model=model,
-                input_ids=selected_candidate_ids,
-                past_key_values=past_key_values,
-            )
-            # Now, setup generation from those new candidate_ids we added
-            start_pos = len(valid_completion_ids) + len(selected_candidate_ids)
+                # Cut off our kv cache up to the valid grammar prefix
+                past_key_values = m.prune_kv_cache(
+                    past_key_values=past_key_values,
+                    up_to=prompt_ids_length + p,
+                )
+                # Clear tokens after valid_completion_id index
+                tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
+                diff = len(prefix_ids) - p
+                if diff > 0:
+                    tokens[
+                        prompt_ids_length + p : prompt_ids_length + p + diff
+                    ] = prefix_ids[-diff:]
+                if (
+                    selected_candidate_ids.shape[-1]
+                    > tokens[prompt_ids_length + p :].shape[0]
+                ):
+                    raise ValueError(
+                        f"Trying to insert candidate {selected_candidate}, but it is too long!"
+                    )
+                # Update tokens with our selected candidate id
+                tokens[
+                    prompt_ids_length
+                    + p
+                    + diff : prompt_ids_length
+                    + p
+                    + diff
+                    + selected_candidate_ids.shape[-1]
+                ] = selected_candidate_ids
+                # print(tokenizer.decode(tokens[tokens != tokenizer.pad_token_id]))
+                start_pos = prompt_ids_length + p + 1
         num_correction_left -= 1
-        logger.debug(Fore.YELLOW + f"Made a {corrections[-1].type} correction...")
+        logger.debug(
+            Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
+        )
     if ret_prediction is None:
         logger.debug(
             Fore.RED

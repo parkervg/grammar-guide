@@ -13,12 +13,14 @@ CorrectionType = Literal[
 class Correction:
     original_pred: str
     corrected_pred: str
+    selected_candidate: str
     type: CorrectionType
 
     def to_dict(self):
         return {
             "Original": self.original_pred,
             "Corrected": self.corrected_pred,
+            "Selected Candidate": self.selected_candidate,
             "Type": self.type,
         }
 
