@@ -16,6 +16,46 @@ torch.manual_seed(42)
 device = torch.device("cpu")
 
 
+def assert_valid_tokens(tokens, tokenizer, start_pos):
+    if (tokens[start_pos:] != tokenizer.pad_token_id).count_nonzero() != 0 or (
+        tokens[:start_pos] == tokenizer.pad_token_id
+    ).count_nonzero() != 0:
+        raise ValueError
+
+
+class TransformersStringBuilder:
+    """This deals with the complexity of building up a string from tokens bit by bit."""
+
+    def __init__(self, tokenizer, starting_ids=None):
+        self.tokenizer = tokenizer
+        self.token_strings = []
+        self._joint_string = ""
+        if starting_ids is not None:
+            self.extend(starting_ids)
+
+    def extend(self, new_ids):
+        new_token_strings = self.tokenizer.convert_ids_to_tokens(new_ids)
+        self.token_strings.extend(new_token_strings)
+        new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
+        diff_str = new_str[len(self._joint_string) :]
+        self._joint_string = new_str
+        return diff_str
+
+    def pop(self):
+        """Remove the last token from the string and return text it removed."""
+        self.token_strings.pop()
+        new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
+        diff_str = self._joint_string[len(new_str) :]
+        self._joint_string = new_str
+        return diff_str
+
+    def __str__(self):
+        return self._joint_string
+
+    def __len__(self):
+        return len(self._joint_string)
+
+
 @attrs
 class Model:
     model: PreTrainedModel = attrib()
@@ -32,12 +72,8 @@ class Model:
     def token_to_id(self, token):
         return self.tokenizer.convert_tokens_to_ids([token])[0]
 
-    #
-    # def id_to_token(self, id):
-    #     return self.tokenizer.decode(id)
-    #
-    # def token_to_id(self, token):
-    #     return self.tokenizer(token, add_special_tokens=False)["input_ids"][0]
+    def new_string_builder(self, starting_ids=None):
+        return TransformersStringBuilder(self.tokenizer, starting_ids)
 
     def _build_token_prefix_map(self):
         token_map = pygtrie.CharTrie()
@@ -219,10 +255,9 @@ def _gen_loop(
         # print()
         # Each entry in cache is tuple of (key, value)
         past_key_values = model_output.past_key_values
-        # Don't update tokens if we've already put a token here
+
         if tokens[cur_pos] != tokenizer.pad_token_id:
-            prev_pos = cur_pos
-            continue
+            raise ValueError
         # len(cache) == model.config.num_hidden_layers
         logits = model_output.logits.squeeze(0)
         for p in processors:
@@ -254,4 +289,4 @@ def _gen_loop(
         prev_pos = cur_pos
         if eos_reached or cur_pos + 1 == tokens.shape[0]:
             break
-    return tokens, new_token_pos, past_key_values
+    return tokens, cur_pos + 1, past_key_values

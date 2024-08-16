@@ -1,3 +1,7 @@
+import regex
+import collections.abc
+
+
 class TokenHealingLogitsProcessor:
     # https://github.com/guidance-ai/guidance/blob/0.0.64/guidance/llms/_transformers.py
     """Token healing.
@@ -91,3 +95,116 @@ class TokenHealingLogitsProcessor:
 
         # make only allowed tokens possible
         return scores + self.token_masks[self.num_extensions - 1]
+
+
+class RegexLogitsProcessor:
+    """Pattern guiding.
+
+    Guide generation to match a regular expression.
+    TODO: currently slow, could be made much faster by doing rejection sampling inline with the sampling/greedy process.
+    """
+
+    def __init__(
+        self,
+        pattern,
+        llm,
+        vocab_size,
+        is_greedy,
+        prefix_length,
+        eos_token_id,
+        max_consider=500000,
+    ):
+        """Build a new TokenHealingLogitsProcessor.
+
+        Parameters
+        ----------
+        pattern : str
+            The regex pattern we are seeking to match.
+        stop_regex : str or list of str
+            The stop regex(s) allowed to come after this pattern.
+        llm : function
+            The llm.
+        vocab_size : int
+            The size of the vocabulary.
+        is_greedy : bool
+            The token selection mode currently in use. We need to know this so we can
+            effectively take over that sampling process inside this logit processor.
+        eos_token_id : int
+            The end of the stop token of the model.
+        max_consider : int
+            How many top values to bias. Note that we could remove this option once this
+            processor is performance optimized (by integrating it into the sampling/greedy process).
+        """
+        import torch
+
+        self.pattern = regex.compile(pattern)
+        self.llm = llm
+        self.is_greedy = is_greedy
+        self.prefix_length = prefix_length
+        self.max_consider = max_consider
+        self.bias_vector = torch.zeros(vocab_size)
+        self.current_strings = None
+        self.current_length = 0
+        self.forced_chars = 0
+        self.eos_token_id = eos_token_id
+
+    def __call__(self, input_ids, scores):
+        import torch
+
+        # handle 1D inputs
+        one_dim = False
+        if not isinstance(input_ids[0], collections.abc.Sequence) and not (
+            hasattr(input_ids[0], "shape") and len(input_ids[0].shape) > 0
+        ):
+            one_dim = True
+            input_ids = torch.tensor(input_ids).unsqueeze(0)
+            scores = torch.tensor(scores).unsqueeze(0)
+
+        # extend our current strings
+        if self.current_strings is None:
+            self.current_strings = [
+                self.llm.new_string_builder() for i in range(len(input_ids))
+            ]
+        for i in range(len(self.current_strings)):
+            self.current_strings[i].extend(input_ids[i][self.current_length :])
+
+        assert (
+            len(self.current_strings) == 1
+        ), "Regex patterns guides do not support batched inference with Transformers yet!"
+
+        self.current_length = len(input_ids[0])
+
+        # compute the bias values
+        self.bias_vector[:] = 0
+        sort_inds = torch.argsort(scores, 1, True)
+        to_bias = []
+        for i in range(min(sort_inds.shape[1], self.max_consider)):
+            self.current_strings[0].extend([sort_inds[0, i]])
+            proposed_string = str(self.current_strings[0])[self.prefix_length :]
+            self.current_strings[0].pop()
+            m = self.pattern.fullmatch(
+                proposed_string, partial=True
+            )  # partial means we don't match currently but might as the string grows
+            if m:
+                to_bias.append(int(sort_inds[0, i]))
+                if (
+                    self.is_greedy
+                ):  # TODO: make this much faster for non-greedy sampling (by tracking how much prob mass we have looked through perhaps...)
+                    break  # we are done if we are doing greedy sampling and we found the top valid hit
+
+        # if we found no more valid tokens then we just end the sequence
+        if not len(to_bias):
+            to_bias = [self.eos_token_id]
+
+        # bias allowed tokens
+        min_to_bias = float(scores[0, to_bias].min())
+        bias_value = (
+            scores[0, sort_inds[0, 0]] - min_to_bias + 10
+        )  # make sure the tokens that fit the pattern have higher scores than the top value
+        for x in to_bias:
+            self.bias_vector[x] = bias_value
+        out = scores + self.bias_vector.to(scores.device)
+        if one_dim:
+            return out[0]
+        else:
+            return out

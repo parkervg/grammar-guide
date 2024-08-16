@@ -119,19 +119,19 @@ def guide(
     start = time.time()
     partial_guidance_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
-    if prefix:
-        prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
-            "input_ids"
-        ].squeeze(0)
-        tokens[
-            len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
-        ] = prefix_ids
-        # start_pos += len(prefix_ids)
+    # if prefix:
+    #     prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
+    #         "input_ids"
+    #     ].squeeze(0)
+    #     tokens[
+    #         len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
+    #     ] = prefix_ids
+    #     # start_pos += len(prefix_ids)
 
-    # Don't pass the last token of prompt here - we use it for generation
+    # Don't pass the last token of prompt here - we'll use it for generation
     past_key_values = m.forward_pass_no_sample(
         model=model,
-        input_ids=tokens[tokens != tokenizer.pad_token_id][:-1].unsqueeze(0),
+        input_ids=tokens[: start_pos - 1].unsqueeze(0),
     )
     while num_correction_left > 0 and ret_prediction is None:
         processors = []
@@ -143,16 +143,16 @@ def guide(
             )
             healed_token_ids = healer.healed_token_ids
             if len(healed_token_ids) > 0:
-                # if tokens[start_pos] == tokenizer.pad_token_id:
                 # Reset back, depending on length of healed tokens
-                tokens[start_pos + 1 - len(healed_token_ids) :] = tokenizer.pad_token_id
-                start_pos -= 1 + len(healed_token_ids)
+                tokens[start_pos - len(healed_token_ids) :] = tokenizer.pad_token_id
+                start_pos -= len(healed_token_ids)
                 past_key_values = m.prune_kv_cache(
                     past_key_values=past_key_values,
-                    up_to=start_pos - len(healed_token_ids) + 1,
+                    up_to=start_pos - len(healed_token_ids),
                 )
+                m.assert_valid_tokens(tokens, tokenizer, start_pos)
                 processors.append(healer)
-        tokens, new_token_pos, past_key_values = m._gen_loop(
+        tokens, start_pos, past_key_values = m._gen_loop(
             model=model,
             tokenizer=tokenizer,
             tokens=tokens,
@@ -165,12 +165,11 @@ def guide(
             top_p=top_p,
             temperature=temperature,
         )
-        # tokens[tokens != tokenizer.pad_token_id].shape == past_key_values.key_cache[0].shape[-2] + 1
+        m.assert_valid_tokens(tokens, tokenizer, start_pos)
         generated_token_ids = tokens[prompt_ids_length:]
         program_prediction: str = tokenizer.decode(
             generated_token_ids, skip_special_tokens=True
         )
-        # program_prediction = prefix + residual_program_prediction
         if validate_program(program_prediction, parser):
             ret_prediction = program_prediction
             continue
@@ -188,27 +187,58 @@ def guide(
             selected_candidate = str_candidates.pop()
             correction_type = "single_candidate"
         else:
-            import guidance
-            import re
+            # import re
+            # processors = []
+            # processors.append(
+            #     RegexLogitsProcessor(
+            #         pattern="|".join([re.escape(s) for s in str_candidates] + re_candidates),
+            #         llm=guide_model,
+            #         vocab_size=model.config.vocab_size,
+            #         is_greedy=temperature==0,
+            #         prefix_length=len(prefix),
+            #         eos_token_id=tokenizer.eos_token_id
+            #     )
+            # )
+            # _old_start_pos = start_pos
+            # tokens, start_pos, past_key_values = m._gen_loop(
+            #     model=model,
+            #     tokenizer=tokenizer,
+            #     tokens=tokens,
+            #     past_key_values=past_key_values,
+            #     processors=processors,
+            #     start_pos=start_pos,
+            #     total_len=total_len,
+            #     stop_at_ids=stop_at_ids,
+            #     max_new_tokens=max_new_tokens,
+            #     top_p=top_p,
+            #     temperature=temperature,
+            # )
+            # selected_candidate_ids = tokens[_old_start_pos:start_pos]
+            # selected_candidate = tokenizer.decode(selected_candidate_ids)
+            if True:
+                import guidance
+                import re
 
-            make_regex_pred = lambda pattern: (
-                partial_guidance_model
-                + prefix
-                + guidance.capture(
-                    guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
-                    "res",
+                make_regex_pred = lambda pattern: (
+                    partial_guidance_model
+                    + prefix
+                    + guidance.capture(
+                        guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
+                        "res",
+                    )
+                )["res"]
+                from pyformlang.regular_expression.regex_objects import (
+                    MisformedRegexError,
                 )
-            )["res"]
-            from pyformlang.regular_expression.regex_objects import MisformedRegexError
 
-            try:
-                selected_candidate = make_regex_pred(
-                    "|".join([re.escape(s) for s in str_candidates] + re_candidates)
-                )
-            except MisformedRegexError:
-                selected_candidate = make_regex_pred(
-                    "|".join([re.escape(s) for s in str_candidates])
-                )
+                try:
+                    selected_candidate = make_regex_pred(
+                        "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+                    )
+                except MisformedRegexError:
+                    selected_candidate = make_regex_pred(
+                        "|".join([re.escape(s) for s in str_candidates])
+                    )
             correction_type = "draft_gen"
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
@@ -256,24 +286,21 @@ def guide(
                     type=correction_type,
                 )
             )
-            # This happens if pos_in_stream occurs within a token
-            # if past_key_values.key_cache[0].shape[2] > len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']):
-            # assert len(prompt_input_ids) + len(tokenizer(program_prediction)['input_ids']) == past_key_values.key_cache[0].shape[2]
             selected_candidate_ids = tokenizer(
                 selected_candidate, return_tensors="pt", add_special_tokens=False
             )["input_ids"]
             if prefix == program_prediction:
                 # Simple case: insert our candidate ids into the end of the running token array
-                total_generated_tokens = generated_token_ids[
-                    generated_token_ids != tokenizer.pad_token_id
-                ].shape[-1]
                 tokens[
-                    prompt_ids_length
-                    + total_generated_tokens : prompt_ids_length
-                    + total_generated_tokens
-                    + selected_candidate_ids.shape[-1]
+                    start_pos : start_pos + selected_candidate_ids.shape[-1]
                 ] = selected_candidate_ids
-                start_pos = prompt_ids_length + total_generated_tokens
+                # Forward pass new candidate tokens - only if length > 1
+                if selected_candidate_ids.shape[-1] > 1:
+                    m.forward_pass_no_sample(
+                        model=model, input_ids=selected_candidate_ids[:, :-1]
+                    )
+                start_pos += selected_candidate_ids.shape[-1]
+                m.assert_valid_tokens(tokens, tokenizer, start_pos)
             else:
                 # Align the token id breakpoint with the stop position in the prefix
                 # prefix = ' {\n "name": "Joseph Smith, 3"\n '
@@ -281,9 +308,7 @@ def guide(
                 prefix_ids = tokenizer(
                     prefix, return_tensors="pt", add_special_tokens=False
                 )["input_ids"].squeeze(0)
-                predicted_ids = tokens[tokens != tokenizer.pad_token_id][
-                    prompt_ids_length:
-                ]
+                predicted_ids = tokens[prompt_ids_length:start_pos]
                 # TODO: the alignnment below breaks with token healing, since it changes
                 #   the tokens in our runnng `tokens` array
                 for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
@@ -324,8 +349,13 @@ def guide(
                     + diff
                     + selected_candidate_ids.shape[-1]
                 ] = selected_candidate_ids
-                # print(tokenizer.decode(tokens[tokens != tokenizer.pad_token_id]))
-                start_pos = prompt_ids_length + p + 1
+                # Forward pass new candidate tokens - only if length > 1
+                if selected_candidate_ids.shape[-1] > 1:
+                    m.forward_pass_no_sample(
+                        model=model, input_ids=selected_candidate_ids[:, :-1]
+                    )
+                start_pos = prompt_ids_length + p + diff + 1
+                m.assert_valid_tokens(tokens, tokenizer, start_pos)
         num_correction_left -= 1
         logger.debug(
             Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
