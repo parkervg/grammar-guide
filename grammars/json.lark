@@ -9,8 +9,8 @@
       | "null"             -> null
 
 array  : "[" [value ("," value)*] "]"
-object : "{" [pair ("," pair)*] "}"
-pair   : string ":" ( value | array )
+object : "{" [pair ("," pair)~5] "}"
+pair   : string ":" value
 
 inner: /([^"]|\\\")+/ |
 string : "\"" inner "\""
