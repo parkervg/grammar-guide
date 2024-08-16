@@ -1,4 +1,3 @@
-import random
 import time
 from typing import Optional, Tuple, Set, Any
 from collections.abc import Collection
@@ -118,7 +117,7 @@ def guide(
     ret_prediction, initial_prediction, selected_candidate = None, None, None
     corrections = []
     start = time.time()
-
+    partial_guidance_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
     if prefix:
         prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
@@ -127,7 +126,7 @@ def guide(
         tokens[
             len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
         ] = prefix_ids
-        start_pos += len(prefix_ids)
+        # start_pos += len(prefix_ids)
 
     # Don't pass the last token of prompt here - we use it for generation
     past_key_values = m.forward_pass_no_sample(
@@ -175,38 +174,41 @@ def guide(
         if validate_program(program_prediction, parser):
             ret_prediction = program_prediction
             continue
-        prefix, candidates, has_re, pos_in_stream = obtain_correction_pairs(
+        prefix, str_candidates, re_candidates, pos_in_stream = obtain_correction_pairs(
             prediction=program_prediction,
             parser=parser,
             candidate_limit=64,
         )
-        if len(candidates) == 0:
-            logger.debug(
-                Fore.LIGHTMAGENTA_EX + "No correction pairs found" + Fore.RESET
-            )
-            return prefix
-        elif len(candidates) == 1 and not has_re:
-            # If we only have 1 candidate, no need to call draft_gen
-            selected_candidate = candidates.pop()
+        if all(len(x) == 0 for x in [str_candidates, re_candidates]):
+            logger.debug("No candidates left")
+            ret_prediction = prefix
+            continue
+        if len(str_candidates) == 1 and len(re_candidates) == 0:
+            # If we only have 1 string candidate, no need to call draft_gen
+            selected_candidate = str_candidates.pop()
             correction_type = "single_candidate"
         else:
-            if draft_model:
-                selected_candidate = (
-                    draft_model
-                    + prompt
-                    + program_prediction
-                    + guidance.capture(
-                        guidance.with_temperature(
-                            guidance.select(options=candidates), "res", 0.0
-                        )
-                    )
+            import guidance
+            import re
+
+            make_regex_pred = lambda pattern: (
+                partial_guidance_model
+                + prefix
+                + guidance.capture(
+                    guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
+                    "res",
                 )
-                # Generate the continuation candidate with the highest probability
-                if False:
-                    # TODO: implement own 'select' logic so we can reuse kv cache
-                    pass
-            else:
-                selected_candidate = random.choice(candidates)
+            )["res"]
+            from pyformlang.regular_expression.regex_objects import MisformedRegexError
+
+            try:
+                selected_candidate = make_regex_pred(
+                    "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+                )
+            except MisformedRegexError:
+                selected_candidate = make_regex_pred(
+                    "|".join([re.escape(s) for s in str_candidates])
+                )
             correction_type = "draft_gen"
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
