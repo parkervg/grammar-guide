@@ -18,15 +18,19 @@ from ..typedefs import StringType
 torch.manual_seed(42)
 device = torch.device("cpu")
 
+GREEN_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 165, 0, 0.25);'>"
+BLUE_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 0, 165, 0.25);'>"
+SPAN_CLOSE = "</span>"
+
 
 class TransformersStringBuilder:
     """This deals with the complexity of building up a string from tokens bit by bit."""
 
-    STRING_TYPE_TO_COLOR = {
-        StringType.PROMPT: "black",
-        StringType.GENERATION: "green",
-        StringType.DELETION: "red",
-        StringType.CANDIDATE_SELECTION: "blue",
+    STRING_TYPE_TO_FMT = {
+        StringType.PROMPT: lambda s: f"<text style=color:black>{s}</text>",
+        StringType.GENERATION: lambda s: f"{GREEN_BG_COLOR_OPEN}<text style=color:black>{s}</text>{SPAN_CLOSE}",
+        StringType.DELETION: lambda s: f"<text style=color:red>{s}</text>",
+        StringType.CANDIDATE_SELECTION: lambda s: f"{BLUE_BG_COLOR_OPEN}<text style=color:blue>{s}</text>{SPAN_CLOSE}",
     }
 
     def __init__(
@@ -44,11 +48,6 @@ class TransformersStringBuilder:
         if starting_ids is not None:
             self.extend(starting_ids, StringType.PROMPT)
 
-    def cstr(self, s, string_type: StringType):
-        return "<text style=color:{}>{}</text>".format(
-            self.STRING_TYPE_TO_COLOR.get(string_type), s
-        )
-
     def extend(self, new_ids, string_type: Optional[StringType] = None):
         new_token_strings = self.tokenizer.convert_ids_to_tokens(new_ids)
         self.token_strings.extend(new_token_strings)
@@ -58,7 +57,8 @@ class TransformersStringBuilder:
         if self.write_to_html:
             assert string_type is not None
             self.html += [
-                self.cstr(self.tokenizer.decode(i), string_type) for i in new_ids
+                self.STRING_TYPE_TO_FMT.get(string_type)(self.tokenizer.decode(i))
+                for i in new_ids
             ]
         # clear_and_print(self._joint_string)
         return diff_str
@@ -73,11 +73,23 @@ class TransformersStringBuilder:
         if self.write_to_html:
             assert i is not None
             i += 1
+            # Change color to red
             self.html[-i] = re.sub(
-                "(style=color:)(green|black)",
+                "(style=color:)(green|black|blue)",
                 r"\1orange" if token_healing else r"\1red",
                 self.html[-i],
             )
+            # Remove green background
+            self.html[-i] = re.sub(
+                f"({re.escape(GREEN_BG_COLOR_OPEN)})(.*)({re.escape(SPAN_CLOSE)})",
+                r"\2",
+                self.html[-i],
+            )
+            # self.html[-i] = re.sub(
+            #     re.escape(SPAN_CLOSE),
+            #     "",
+            #     self.html[-i]
+            # )
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = self._joint_string[len(new_str) :]
         self._joint_string = new_str

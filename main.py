@@ -51,7 +51,7 @@ if __name__ == "__main__":
         },
     ]
     if True:
-        max_new_tokens = 10
+        max_new_tokens = 20
         max_grammar_corrections = 10
         # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
         start = time.time()
@@ -68,13 +68,13 @@ if __name__ == "__main__":
                 max_new_tokens=max_new_tokens,
                 temperature=0.0,
             )
-            # for c in res.correction_log:
-            #     print("Original:")
-            #     print(c.original_pred)
-            #     print(f"Corrected (using {c.type}):")
-            #     print(c.corrected_pred)
-            #     print("------------------------------------------------")
-            # print("\n\n\n")
+            for c in res.correction_log:
+                print("Original:")
+                print(c.original_pred)
+                print(f"Corrected (using {c.type}):")
+                print(c.corrected_pred)
+                print("------------------------------------------------")
+            print("\n\n\n")
             try:
                 print(json.dumps(json.loads(res.response), indent=4))
             except:
