@@ -200,6 +200,39 @@ def guide(
             selected_candidate = str_candidates.pop()
             correction_type = "single_candidate"
         else:
+            # Figure out `p`
+            # I.e. - where in tokens is the index matching our `prefix`?
+            # if prefix == program_prediction:
+            #     pass
+            # else:
+            #     # Align the token id breakpoint with the stop position in the prefix
+            #     # prefix = ' {\n "name": "Joseph Smith, 3"\n '
+            #     # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
+            #     prefix_ids = tokenizer(
+            #         prefix, return_tensors="pt", add_special_tokens=False
+            #     )["input_ids"].squeeze(0)
+            #     predicted_ids = tokens[prompt_ids_length:start_pos]
+            #     # TODO: the alignnment below breaks with token healing, since it changes
+            #     #   the tokens in our runnng `tokens` array
+            #     for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
+            #         if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
+            #             break
+            #         prefix_id = prefix_ids[p]
+            #         predicted_id = predicted_ids[p]
+            #         if prefix_id != predicted_id:
+            #             break
+            #     assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
+            #         predicted_ids[:p]
+            #     )
+            # # Cut off our kv cache up to the valid grammar prefix
+            # past_key_values = m.prune_kv_cache(
+            #     past_key_values=past_key_values,
+            #     up_to=prompt_ids_length + p,
+            # )
+            # # Use these new past_key_values to select a candidate
+            # _tokens = tokens[:]
+            # _tokens[prompt_ids_length + p:] = tokenizer.pad_token_id
+            # m.assert_valid_token_state(_tokens, tokenizer, p)
             # import re
             # processors = []
             # processors.append(
@@ -212,14 +245,14 @@ def guide(
             #         eos_token_id=tokenizer.eos_token_id
             #     )
             # )
-            # _old_start_pos = start_pos
+            # _old_start_pos = p
             # tokens, start_pos, past_key_values = m._gen_loop(
             #     model=model,
             #     tokenizer=tokenizer,
             #     tokens=tokens,
             #     past_key_values=past_key_values,
             #     processors=processors,
-            #     start_pos=start_pos,
+            #     start_pos=p,
             #     total_len=total_len,
             #     stop_at_ids=stop_at_ids,
             #     max_new_tokens=max_new_tokens,
@@ -228,7 +261,7 @@ def guide(
             # )
             # selected_candidate_ids = tokens[_old_start_pos:start_pos]
             # selected_candidate = tokenizer.decode(selected_candidate_ids)
-            selected_candidate = random.choice(str_candidates)
+            # selected_candidate = random.choice(str_candidates)
             if False:
                 import guidance
                 import re
@@ -253,18 +286,22 @@ def guide(
                     selected_candidate = make_regex_pred(
                         "|".join([re.escape(s) for s in str_candidates])
                     )
+            else:
+                selected_candidate = random.choice(str_candidates)
             correction_type = "draft_gen"
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
         #   Example: SELECT a b FROM table -> SELECT a, b FROM table
         inserted_candidate_prediction = (
-            prefix
-            + selected_candidate
-            + (program_prediction[pos_in_stream:] if pos_in_stream != -1 else "")
+            (prefix + selected_candidate + program_prediction[pos_in_stream:])
+            if pos_in_stream != -1
+            else None
         )
         # print(f"Selected candidate {selected_candidate}")
         partial_program_prediction = prefix + selected_candidate
-        if validate_program(inserted_candidate_prediction, parser):
+        if inserted_candidate_prediction is not None and validate_program(
+            inserted_candidate_prediction, parser
+        ):
             ret_prediction = inserted_candidate_prediction
             correction_type += "_middle_fill"
             corrections.append(

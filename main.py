@@ -66,7 +66,7 @@ if __name__ == "__main__":
                 ),
                 max_grammar_corrections=max_grammar_corrections,
                 max_new_tokens=max_new_tokens,
-                temperature=0.7,
+                temperature=0.0,
             )
             # for c in res.correction_log:
             #     print("Original:")
