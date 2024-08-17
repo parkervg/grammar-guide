@@ -1,5 +1,14 @@
 from typing import Literal, List
 from dataclasses import dataclass
+from enum import Enum
+
+
+class StringType(str, Enum):
+    PROMPT = "prompt"
+    DELETION = "deletion"
+    GENERATION = "generation"
+    CANDIDATE_SELECTION = "candidate_selection"
+
 
 CorrectionType = Literal[
     "single_candidate",

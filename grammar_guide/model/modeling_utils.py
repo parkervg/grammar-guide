@@ -10,56 +10,78 @@ from transformers import (
     PreTrainedModel,
     LogitsProcessor,
 )
+import re
 import pygtrie
+
+from ..typedefs import StringType
 
 torch.manual_seed(42)
 device = torch.device("cpu")
 
 
-def clear_and_print(s: str):
-    print("\n" * 1000)
-    print(s)
-
-
-def assert_valid_token_state(tokens, tokenizer, start_pos):
-    if (tokens[start_pos:] != tokenizer.pad_token_id).count_nonzero() != 0 or (
-        tokens[:start_pos] == tokenizer.pad_token_id
-    ).count_nonzero() != 0:
-        raise ValueError
-
-
-def assert_valid_string_state(string_builder, tokens):
-    assert string_builder._joint_string == string_builder.tokenizer.decode(
-        tokens, skip_special_tokens=True
-    )
-
-
 class TransformersStringBuilder:
     """This deals with the complexity of building up a string from tokens bit by bit."""
 
-    def __init__(self, tokenizer, starting_ids=None):
+    STRING_TYPE_TO_COLOR = {
+        StringType.PROMPT: "black",
+        StringType.GENERATION: "green",
+        StringType.DELETION: "red",
+        StringType.CANDIDATE_SELECTION: "blue",
+    }
+
+    def __init__(
+        self,
+        tokenizer,
+        starting_ids: Optional[torch.tensor] = None,
+        write_to_html: bool = False,
+    ):
         self.tokenizer = tokenizer
         self.token_strings = []
         self._joint_string = ""
+        self.write_to_html = write_to_html
+        self.html = []
+        self.contiguous_pops = 0
         if starting_ids is not None:
-            self.extend(starting_ids)
+            self.extend(starting_ids, StringType.PROMPT)
 
-    def extend(self, new_ids):
+    def cstr(self, s, string_type: StringType):
+        return "<text style=color:{}>{}</text>".format(
+            self.STRING_TYPE_TO_COLOR.get(string_type), s
+        )
+
+    def extend(self, new_ids, string_type: Optional[StringType] = None):
         new_token_strings = self.tokenizer.convert_ids_to_tokens(new_ids)
         self.token_strings.extend(new_token_strings)
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = new_str[len(self._joint_string) :]
         self._joint_string = new_str
-        clear_and_print(self._joint_string)
+        if self.write_to_html:
+            assert string_type is not None
+            self.html += [
+                self.cstr(self.tokenizer.decode(i), string_type) for i in new_ids
+            ]
+        # clear_and_print(self._joint_string)
         return diff_str
 
-    def pop(self):
+    def pop(self, i: Optional[int] = None, token_healing: bool = False):
         """Remove the last token from the string and return text it removed."""
         self.token_strings.pop()
+        # if self.write_to_html and token_healing:
+        #     # Don't render token healing backtracks in html
+        #     # This is info overload for the user
+        #     self.html.pop()
+        if self.write_to_html:
+            assert i is not None
+            i += 1
+            self.html[-i] = re.sub(
+                "(style=color:)(green|black)",
+                r"\1orange" if token_healing else r"\1red",
+                self.html[-i],
+            )
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = self._joint_string[len(new_str) :]
         self._joint_string = new_str
-        clear_and_print(self._joint_string)
+        # clear_and_print(self._joint_string)
         return diff_str
 
     def __str__(self):
@@ -103,7 +125,29 @@ class Model:
         return [v for arr in self._token_prefix_map.values(prefix=prefix) for v in arr]
 
 
-def initialize_tokens(total_len, pad_token_id):
+def clear_and_print(s: str):
+    print("\n" * 1000)
+    print(s)
+
+
+def assert_valid_token_state(
+    tokens: torch.tensor, tokenizer: PreTrainedTokenizer, start_pos: int
+):
+    if (tokens[start_pos:] != tokenizer.pad_token_id).count_nonzero() != 0 or (
+        tokens[:start_pos] == tokenizer.pad_token_id
+    ).count_nonzero() != 0:
+        raise ValueError
+
+
+def assert_valid_string_state(
+    string_builder: TransformersStringBuilder, tokens: torch.tensor
+):
+    assert string_builder._joint_string == string_builder.tokenizer.decode(
+        tokens, skip_special_tokens=True
+    )
+
+
+def initialize_tokens(total_len: int, pad_token_id: int):
     return torch.full(
         (total_len,),
         pad_token_id,
@@ -201,7 +245,7 @@ def forward_pass_no_sample(
     input_ids,
     past_key_values: Optional[DynamicCache] = None,
 ):
-    """Used to pass prompts (i.e. bits of text where we don't care about the logits)"""
+    """Used to pass bits of text where we don't care about the logits"""
     return model(
         input_ids=input_ids,
         past_key_values=past_key_values or DynamicCache(),
@@ -283,7 +327,7 @@ def _gen_loop(
         else:
             next_token = torch.argmax(last_logits, dim=-1)
         tokens[cur_pos] = next_token
-        string_builder.extend([next_token])
+        string_builder.extend([next_token], StringType.GENERATION)
         # if p:
         #     try:
         #         feed_str_to_parser(parser, p, tokenizer.decode(next_token))

@@ -51,8 +51,8 @@ if __name__ == "__main__":
         },
     ]
     if True:
-        max_new_tokens = 25
-        max_grammar_corrections = 20
+        max_new_tokens = 10
+        max_grammar_corrections = 10
         # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
         start = time.time()
         for example in examples:

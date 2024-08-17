@@ -1,6 +1,8 @@
+import random
 import time
 from typing import Optional, Tuple, Set, Any
 from collections.abc import Collection
+from IPython.display import display
 
 from transformers import AutoModelForCausalLM, AutoTokenizer
 from lark import Lark
@@ -13,7 +15,7 @@ from .model import modeling_utils as m
 from .model.logits_processors import TokenHealingLogitsProcessor
 from .minEarley.parser import EarleyParser
 from ._logger import logger
-from .typedefs import GrammarGuideOutput, Correction
+from .typedefs import GrammarGuideOutput, Correction, StringType
 
 DEVICE = "cpu"
 
@@ -112,7 +114,7 @@ def guide(
         # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
     )
     string_builder = m.TransformersStringBuilder(
-        tokenizer, starting_ids=prompt_input_ids
+        tokenizer, starting_ids=prompt_input_ids, write_to_html=True
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
@@ -130,7 +132,7 @@ def guide(
             len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
         ] = prefix_ids
         start_pos += len(prefix_ids)
-        string_builder.extend(prefix_ids)
+        string_builder.extend(prefix_ids, StringType.PROMPT)
         m.assert_valid_string_state(string_builder, tokens)
         m.assert_valid_token_state(tokens, tokenizer, start_pos)
 
@@ -156,8 +158,9 @@ def guide(
                     past_key_values=past_key_values,
                     up_to=start_pos - len(healed_token_ids),
                 )
-                for _ in range(len(healed_token_ids)):
-                    string_builder.pop()
+                for i in range(len(healed_token_ids)):
+                    string_builder.pop(i, token_healing=True)
+                string_builder.contiguous_pops = 0
                 m.assert_valid_token_state(tokens, tokenizer, start_pos)
                 processors.append(healer)
         tokens, start_pos, past_key_values, string_builder = m._gen_loop(
@@ -225,7 +228,8 @@ def guide(
             # )
             # selected_candidate_ids = tokens[_old_start_pos:start_pos]
             # selected_candidate = tokenizer.decode(selected_candidate_ids)
-            if True:
+            selected_candidate = random.choice(str_candidates)
+            if False:
                 import guidance
                 import re
 
@@ -318,7 +322,9 @@ def guide(
                         model=model, input_ids=selected_candidate_ids[:, :-1]
                     )
                 start_pos += selected_candidate_ids.shape[-1]
-                string_builder.extend(selected_candidate_ids.squeeze(0))
+                string_builder.extend(
+                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+                )
                 m.assert_valid_string_state(string_builder, tokens)
                 m.assert_valid_token_state(tokens, tokenizer, start_pos)
             else:
@@ -348,8 +354,9 @@ def guide(
                 )
                 # Clear tokens after valid_completion_id index
                 tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
-                for _ in range(predicted_ids.shape[-1] - p):
-                    string_builder.pop()
+                for i in range(predicted_ids.shape[-1] - p):
+                    string_builder.pop(i)
+                string_builder.contiguous_pops = 0
                 m.assert_valid_string_state(string_builder, tokens)
                 diff = len(prefix_ids) - p
                 if diff > 0:
@@ -357,7 +364,7 @@ def guide(
                         prompt_ids_length + p : prompt_ids_length + p + diff
                     ] = prefix_ids[-diff:]
                     # TODO: reshape prefix_ids[-diff] to (1, 1) if a 0-dimensional tensor
-                    string_builder.extend(prefix_ids[-diff:])
+                    string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
                     m.assert_valid_string_state(string_builder, tokens)
                 if (
                     selected_candidate_ids.shape[-1]
@@ -381,7 +388,9 @@ def guide(
                         model=model, input_ids=selected_candidate_ids[:, :-1]
                     )
                 start_pos = prompt_ids_length + p + diff + 1
-                string_builder.extend(selected_candidate_ids.squeeze(0))
+                string_builder.extend(
+                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+                )
                 m.assert_valid_string_state(string_builder, tokens)
                 m.assert_valid_token_state(tokens, tokenizer, start_pos)
         num_correction_left -= 1
@@ -399,7 +408,16 @@ def guide(
             + Fore.RESET
         )
         ret_prediction = prefix
-    logger.debug(Fore.GREEN + ret_prediction + Fore.RESET)
+    display(
+        {
+            "text/html": "<div style='margin: 0px; padding: 0px; font-family: ColfaxAI, Arial; font-size: 20px;'"
+            + "".join(string_builder.html)
+            + "</div>"
+        },
+        display_id=0,
+        raw=True,
+        include=["text/html"],
+    )
     return GrammarGuideOutput(
         response=ret_prediction,
         num_grammar_corrections=len(corrections),
