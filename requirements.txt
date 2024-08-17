@@ -2,3 +2,4 @@ colorama
 exrex
 lark
 pygtrie
+ipython

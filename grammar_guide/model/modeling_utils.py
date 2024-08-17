@@ -16,11 +16,22 @@ torch.manual_seed(42)
 device = torch.device("cpu")
 
 
-def assert_valid_tokens(tokens, tokenizer, start_pos):
+def clear_and_print(s: str):
+    print("\n" * 1000)
+    print(s)
+
+
+def assert_valid_token_state(tokens, tokenizer, start_pos):
     if (tokens[start_pos:] != tokenizer.pad_token_id).count_nonzero() != 0 or (
         tokens[:start_pos] == tokenizer.pad_token_id
     ).count_nonzero() != 0:
         raise ValueError
+
+
+def assert_valid_string_state(string_builder, tokens):
+    assert string_builder._joint_string == string_builder.tokenizer.decode(
+        tokens, skip_special_tokens=True
+    )
 
 
 class TransformersStringBuilder:
@@ -39,6 +50,7 @@ class TransformersStringBuilder:
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = new_str[len(self._joint_string) :]
         self._joint_string = new_str
+        clear_and_print(self._joint_string)
         return diff_str
 
     def pop(self):
@@ -47,6 +59,7 @@ class TransformersStringBuilder:
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = self._joint_string[len(new_str) :]
         self._joint_string = new_str
+        clear_and_print(self._joint_string)
         return diff_str
 
     def __str__(self):
@@ -204,6 +217,7 @@ def _gen_loop(
     tokenizer: AutoTokenizer,
     tokens: torch.tensor,
     past_key_values: DynamicCache,
+    string_builder: TransformersStringBuilder,
     start_pos: int,
     total_len: int,
     stop_at_ids: torch.tensor,
@@ -269,6 +283,7 @@ def _gen_loop(
         else:
             next_token = torch.argmax(last_logits, dim=-1)
         tokens[cur_pos] = next_token
+        string_builder.extend([next_token])
         # if p:
         #     try:
         #         feed_str_to_parser(parser, p, tokenizer.decode(next_token))
@@ -289,4 +304,4 @@ def _gen_loop(
         prev_pos = cur_pos
         if eos_reached or cur_pos + 1 == tokens.shape[0]:
             break
-    return tokens, cur_pos + 1, past_key_values
+    return tokens, cur_pos + 1, past_key_values, string_builder

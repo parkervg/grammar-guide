@@ -8,6 +8,7 @@ from lark import exceptions as lark_exceptions
 from lark.parsers.lalr_interactive_parser import InteractiveParser
 from colorama import Fore
 
+
 from .model import modeling_utils as m
 from .model.logits_processors import TokenHealingLogitsProcessor
 from .minEarley.parser import EarleyParser
@@ -78,6 +79,7 @@ def guide(
     temperature: float = 0.6,
     max_new_tokens: int = 32,
 ):
+    start = time.time()
     if all([x is None for x in {lark_grammar_str, lark_grammar_filepath}]):
         raise ValueError(
             "One of `cfg_grammar_str`, `cfg_grammar_filepath` must be specified!"
@@ -106,27 +108,31 @@ def guide(
     prompt_ids_length = prompt_input_ids.shape[0]
     total_len = min(
         model.config.max_position_embeddings,
-        128
+        512
         # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
+    )
+    string_builder = m.TransformersStringBuilder(
+        tokenizer, starting_ids=prompt_input_ids
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
     num_correction_left = max_grammar_corrections
-    # partial_program_prediction = seed_str or ""
     prefix = seed_str or ""
     ret_prediction, initial_prediction, selected_candidate = None, None, None
     corrections = []
-    start = time.time()
     partial_guidance_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
-    # if prefix:
-    #     prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
-    #         "input_ids"
-    #     ].squeeze(0)
-    #     tokens[
-    #         len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
-    #     ] = prefix_ids
-    #     # start_pos += len(prefix_ids)
+    if prefix:
+        prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
+            "input_ids"
+        ].squeeze(0)
+        tokens[
+            len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
+        ] = prefix_ids
+        start_pos += len(prefix_ids)
+        string_builder.extend(prefix_ids)
+        m.assert_valid_string_state(string_builder, tokens)
+        m.assert_valid_token_state(tokens, tokenizer, start_pos)
 
     # Don't pass the last token of prompt here - we'll use it for generation
     past_key_values = m.forward_pass_no_sample(
@@ -150,14 +156,17 @@ def guide(
                     past_key_values=past_key_values,
                     up_to=start_pos - len(healed_token_ids),
                 )
-                m.assert_valid_tokens(tokens, tokenizer, start_pos)
+                for _ in range(len(healed_token_ids)):
+                    string_builder.pop()
+                m.assert_valid_token_state(tokens, tokenizer, start_pos)
                 processors.append(healer)
-        tokens, start_pos, past_key_values = m._gen_loop(
+        tokens, start_pos, past_key_values, string_builder = m._gen_loop(
             model=model,
             tokenizer=tokenizer,
             tokens=tokens,
             past_key_values=past_key_values,
             processors=processors,
+            string_builder=string_builder,
             start_pos=start_pos,
             total_len=total_len,
             stop_at_ids=stop_at_ids,
@@ -165,7 +174,8 @@ def guide(
             top_p=top_p,
             temperature=temperature,
         )
-        m.assert_valid_tokens(tokens, tokenizer, start_pos)
+        m.assert_valid_string_state(string_builder, tokens)
+        m.assert_valid_token_state(tokens, tokenizer, start_pos)
         generated_token_ids = tokens[prompt_ids_length:]
         program_prediction: str = tokenizer.decode(
             generated_token_ids, skip_special_tokens=True
@@ -289,6 +299,14 @@ def guide(
             selected_candidate_ids = tokenizer(
                 selected_candidate, return_tensors="pt", add_special_tokens=False
             )["input_ids"]
+            if (
+                tokens.shape[-1]
+                - tokens[tokens != tokenizer.pad_token_id].count_nonzero()
+                < selected_candidate_ids.shape[-1]
+            ):
+                logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
+                ret_prediction = prefix
+                continue
             if prefix == program_prediction:
                 # Simple case: insert our candidate ids into the end of the running token array
                 tokens[
@@ -300,7 +318,9 @@ def guide(
                         model=model, input_ids=selected_candidate_ids[:, :-1]
                     )
                 start_pos += selected_candidate_ids.shape[-1]
-                m.assert_valid_tokens(tokens, tokenizer, start_pos)
+                string_builder.extend(selected_candidate_ids.squeeze(0))
+                m.assert_valid_string_state(string_builder, tokens)
+                m.assert_valid_token_state(tokens, tokenizer, start_pos)
             else:
                 # Align the token id breakpoint with the stop position in the prefix
                 # prefix = ' {\n "name": "Joseph Smith, 3"\n '
@@ -328,11 +348,17 @@ def guide(
                 )
                 # Clear tokens after valid_completion_id index
                 tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
+                for _ in range(predicted_ids.shape[-1] - p):
+                    string_builder.pop()
+                m.assert_valid_string_state(string_builder, tokens)
                 diff = len(prefix_ids) - p
                 if diff > 0:
                     tokens[
                         prompt_ids_length + p : prompt_ids_length + p + diff
                     ] = prefix_ids[-diff:]
+                    # TODO: reshape prefix_ids[-diff] to (1, 1) if a 0-dimensional tensor
+                    string_builder.extend(prefix_ids[-diff:])
+                    m.assert_valid_string_state(string_builder, tokens)
                 if (
                     selected_candidate_ids.shape[-1]
                     > tokens[prompt_ids_length + p :].shape[0]
@@ -355,11 +381,17 @@ def guide(
                         model=model, input_ids=selected_candidate_ids[:, :-1]
                     )
                 start_pos = prompt_ids_length + p + diff + 1
-                m.assert_valid_tokens(tokens, tokenizer, start_pos)
+                string_builder.extend(selected_candidate_ids.squeeze(0))
+                m.assert_valid_string_state(string_builder, tokens)
+                m.assert_valid_token_state(tokens, tokenizer, start_pos)
         num_correction_left -= 1
         logger.debug(
             Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
         )
+        if tokens[tokens != tokenizer.pad_token_id].count_nonzero() == 0:
+            logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
+            ret_prediction = prefix
+            continue
     if ret_prediction is None:
         logger.debug(
             Fore.RED

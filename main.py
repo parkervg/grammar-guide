@@ -26,7 +26,7 @@ if __name__ == "__main__":
 
     from grammar_guide import guide
 
-    model_name_or_path = "HuggingFaceTB/SmolLM-360M"
+    model_name_or_path = "HuggingFaceTB/SmolLM-135M"
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
 
@@ -38,6 +38,7 @@ if __name__ == "__main__":
         """
             ),
             "lark_grammar_filepath": "./grammars/json.lark",
+            "seed_str": '{"name":',
             "stop_at": ["```"],
         },
         {
@@ -50,8 +51,8 @@ if __name__ == "__main__":
         },
     ]
     if True:
-        max_new_tokens = 10
-        max_grammar_corrections = 10
+        max_new_tokens = 25
+        max_grammar_corrections = 20
         # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
         start = time.time()
         for example in examples:
@@ -65,15 +66,15 @@ if __name__ == "__main__":
                 ),
                 max_grammar_corrections=max_grammar_corrections,
                 max_new_tokens=max_new_tokens,
-                temperature=0.0,
+                temperature=0.7,
             )
-            for c in res.correction_log:
-                print("Original:")
-                print(c.original_pred)
-                print(f"Corrected (using {c.type}):")
-                print(c.corrected_pred)
-                print("------------------------------------------------")
-            print("\n\n\n")
+            # for c in res.correction_log:
+            #     print("Original:")
+            #     print(c.original_pred)
+            #     print(f"Corrected (using {c.type}):")
+            #     print(c.corrected_pred)
+            #     print("------------------------------------------------")
+            # print("\n\n\n")
             try:
                 print(json.dumps(json.loads(res.response), indent=4))
             except:
