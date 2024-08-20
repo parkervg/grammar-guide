@@ -85,11 +85,6 @@ class TransformersStringBuilder:
                 r"\2",
                 self.html[-i],
             )
-            # self.html[-i] = re.sub(
-            #     re.escape(SPAN_CLOSE),
-            #     "",
-            #     self.html[-i]
-            # )
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = self._joint_string[len(new_str) :]
         self._joint_string = new_str
@@ -241,14 +236,11 @@ def prune_kv_cache(past_key_values: DynamicCache, up_to: int) -> DynamicCache:
     with the shape (batch_size, num_key_value_heads, seq_len, ??)
     # TODO: the last dimension is 64, not sure where this comes from)
     """
-    # print("Current key cache shape: {}".format(past_key_values.key_cache[0].shape[-2]))
-    # print("New shape: {}".format(up_to))
     _past_key_values = DynamicCache()
     _past_key_values.key_cache = [t[..., :up_to, :] for t in past_key_values.key_cache]
     _past_key_values.value_cache = [
         t[..., :up_to, :] for t in past_key_values.value_cache
     ]
-    # _past_key_values._seen_tokens = _past_key_values.key_cache[0].shape[2]
     return _past_key_values
 
 
@@ -319,10 +311,7 @@ def _gen_loop(
             output_attentions=False,
             output_hidden_states=False,
         )
-        # print()
-        # print("Received token:")
-        # print(tokenizer.decode(tokens[prev_pos:cur_pos]))
-        # print()
+
         # Each entry in cache is tuple of (key, value)
         past_key_values = model_output.past_key_values
 
