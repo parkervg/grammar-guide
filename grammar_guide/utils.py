@@ -69,6 +69,7 @@ def handle_program_prediction(
     """
     if validate_program(program_prediction, parser):
         return (None, program_prediction, None)
+
     prefix, str_candidates, re_candidates, pos_in_stream = obtain_correction_pairs(
         prediction=program_prediction,
         parser=parser,
