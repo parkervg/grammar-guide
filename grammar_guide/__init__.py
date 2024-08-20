@@ -1,1 +1,1 @@
-from .guide import guide
+from .guide import guide, load_parser

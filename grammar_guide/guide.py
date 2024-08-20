@@ -1,84 +1,42 @@
-import time
-from typing import Optional, Tuple, Set, Any
+from typing import Optional, Callable, Union
 from collections.abc import Collection
+from transformers import AutoModelForCausalLM, AutoTokenizer
+import time
+from colorama import Fore
+import guidance
 from IPython.display import display
 
-from transformers import AutoModelForCausalLM, AutoTokenizer
-from lark import Lark
-from lark import exceptions as lark_exceptions
-from lark.parsers.lalr_interactive_parser import InteractiveParser
-from colorama import Fore
-
-
+from .minEarley.parser import EarleyParser
+from .typedefs import GrammarGuideOutput, StringType
 from .model import modeling_utils as m
 from .model.logits_processors import TokenHealingLogitsProcessor
-from .minEarley.parser import EarleyParser
+from .utils import is_interactive, prepare_initial_prefix, handle_program_prediction
 from ._logger import logger
-from .typedefs import GrammarGuideOutput, Correction, StringType
-
-DEVICE = "cpu"
 
 
-def is_interactive():
-    import __main__ as main
-
-    return not hasattr(main, "__file__")
-
-
-class InvalidTokenState(ValueError):
-    pass
-
-
-def validate_program(prediction: str, parser: EarleyParser) -> bool:
-    try:
-        parser.parse(prediction)
-        return True
-    except Exception:
-        # logger.debug(Fore.LIGHTCYAN_EX + prediction + Fore.RESET)
-        # logger.debug(f"Error: {str(runtime_e)}")
-        return False
-
-
-def obtain_correction_pairs(
-    prediction: str,
-    parser: EarleyParser,
-    candidate_limit: int,
-) -> Tuple[str, Set[str], int]:
-    """
-    Returns a list of candidates in the form of (prefix, candidates, error_position_index).
-    """
-    try:
-        parser.parse(prediction)
+def load_parser(
+    lark_grammar_str: Optional[str] = None, lark_grammar_filepath: Optional[str] = None
+) -> EarleyParser:
+    if all([x is None for x in {lark_grammar_str, lark_grammar_filepath}]):
         raise ValueError(
-            "When calling obtain_correction_pairs, the passed prediction should already be assumed to fail the grammar constraints"
+            "One of `cfg_grammar_str`, `cfg_grammar_filepath` must be specified!"
         )
-    except Exception as runtime_e:
-        return parser.handle_error(
-            runtime_e,
-            candidate_limit=candidate_limit,
-        )
-
-
-def feed_str_to_parser(parser: Lark, p: InteractiveParser, s: str):
-    try:
-        for t in parser.lex(s):
-            if t.type in p.accepts():
-                # I guess .feed_token() calls exhaust_lexer() behind the scenes?
-                p.feed_token(t)
-            else:
-                raise InvalidTokenState(f"Token {s} is not in accept states")
-    except lark_exceptions.UnexpectedCharacters:
-        raise InvalidTokenState(f"Token {s} is invalid") from None
+    return EarleyParser(
+        grammar=open(lark_grammar_filepath).read()
+        if lark_grammar_filepath
+        else lark_grammar_str,
+        start="start",
+        keep_all_tokens=True,
+    )
 
 
 def guide(
-    model: AutoModelForCausalLM,
-    tokenizer: AutoTokenizer,
+    model: Union[AutoModelForCausalLM, Callable[[str], str]],
+    parser: EarleyParser,
     prompt: str,
-    draft_model: Optional[Any] = None,
+    tokenizer: Optional[AutoTokenizer] = None,
+    draft_model: Optional[guidance.models.Model] = None,
     seed_str: Optional[str] = None,
-    lark_grammar_str: Optional[str] = None,
-    lark_grammar_filepath: Optional[str] = None,
     max_grammar_corrections: int = 3,
     stop_at: Collection[str] = None,
     token_healing: Optional[bool] = True,
@@ -86,19 +44,50 @@ def guide(
     temperature: float = 0.6,
     max_new_tokens: int = 32,
     verbose: bool = True,
+) -> GrammarGuideOutput:
+    if hasattr(model, "config"):
+        return _transformers_guide(
+            model=model,
+            tokenizer=tokenizer,
+            parser=parser,
+            prompt=prompt,
+            draft_model=draft_model,
+            seed_str=seed_str,
+            max_grammar_corrections=max_grammar_corrections,
+            stop_at=stop_at,
+            token_healing=token_healing,
+            top_p=top_p,
+            temperature=temperature,
+            max_new_tokens=max_new_tokens,
+            verbose=verbose,
+        )
+    assert isinstance(model, Callable)
+    return _generic_guide(
+        model=model,
+        parser=parser,
+        prompt=prompt,
+        draft_model=draft_model,
+        seed_str=seed_str,
+        max_grammar_corrections=max_grammar_corrections,
+    )
+
+
+def _transformers_guide(
+    model: AutoModelForCausalLM,
+    tokenizer: AutoTokenizer,
+    parser: EarleyParser,
+    prompt: str,
+    draft_model: Optional[guidance.models.Model],
+    seed_str: Optional[str],
+    max_grammar_corrections: int,
+    stop_at: Collection[str],
+    token_healing: Optional[bool],
+    top_p: float,
+    temperature: float,
+    max_new_tokens: int,
+    verbose: bool,
 ):
     start = time.time()
-    if all([x is None for x in {lark_grammar_str, lark_grammar_filepath}]):
-        raise ValueError(
-            "One of `cfg_grammar_str`, `cfg_grammar_filepath` must be specified!"
-        )
-    elif lark_grammar_filepath:
-        lark_grammar_str = open(lark_grammar_filepath).read()
-    parser: EarleyParser = EarleyParser(
-        grammar=lark_grammar_str,
-        start="start",
-        keep_all_tokens=True,
-    )
     guide_model = m.Model(model=model, tokenizer=tokenizer)
     # https://huggingface.co/docs/transformers/llm_tutorial#wrong-padding-side
     if tokenizer.pad_token is None:
@@ -129,23 +118,13 @@ def guide(
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
-    num_correction_left = max_grammar_corrections
-    prefix = seed_str or ""
-    ret_prediction, initial_prediction, selected_candidate = None, None, None
-    corrections = []
-    partial_guidance_model = draft_model + prompt
+    draft_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
 
-    # Check to see if our grammar gives us any freebies at the beginning of prediction
-    # E.g. maybe in our SQL grammar, we can only begin with 'SELECT'
-    if prefix == "":
-        _, str_candidates, re_candidates, _ = obtain_correction_pairs(
-            prediction=prefix,
-            parser=parser,
-            candidate_limit=64,
-        )
-        if len(re_candidates) == 0 and len(str_candidates) == 1:
-            prefix = str_candidates.pop()
+    corrections = []
+    num_correction_left = max_grammar_corrections
+    ret_prediction, initial_prediction, selected_candidate = None, None, None
+    prefix: str = prepare_initial_prefix(parser=parser, seed_str=seed_str)
 
     if prefix:
         prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
@@ -206,250 +185,117 @@ def guide(
         program_prediction: str = tokenizer.decode(
             generated_token_ids, skip_special_tokens=True
         )
-        if validate_program(program_prediction, parser):
-            ret_prediction = program_prediction
-            continue
-        prefix, str_candidates, re_candidates, pos_in_stream = obtain_correction_pairs(
-            prediction=program_prediction,
+
+        prefix, ret_prediction, correction = handle_program_prediction(
+            program_prediction=program_prediction,
             parser=parser,
-            candidate_limit=64,
+            draft_model=draft_model,
         )
-        if all(len(x) == 0 for x in [str_candidates, re_candidates]):
-            logger.debug("No candidates left")
+        if correction is not None:
+            corrections.append(correction)
+        if ret_prediction is not None:
+            continue
+        selected_candidate = correction.selected_candidate
+
+        selected_candidate_ids = tokenizer(
+            selected_candidate, return_tensors="pt", add_special_tokens=False
+        )["input_ids"]
+        if (
+            tokens.shape[-1] - tokens[tokens != tokenizer.pad_token_id].count_nonzero()
+            < selected_candidate_ids.shape[-1]
+        ):
+            logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
             ret_prediction = prefix
             continue
-        if len(str_candidates) == 1 and len(re_candidates) == 0:
-            # If we only have 1 string candidate, no need to call draft_gen
-            selected_candidate = str_candidates.pop()
-            correction_type = "single_candidate"
-        else:
-            # Figure out `p`
-            # I.e. - where in tokens is the index matching our `prefix`?
-            # if prefix == program_prediction:
-            #     pass
-            # else:
-            #     # Align the token id breakpoint with the stop position in the prefix
-            #     # prefix = ' {\n "name": "Joseph Smith, 3"\n '
-            #     # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
-            #     prefix_ids = tokenizer(
-            #         prefix, return_tensors="pt", add_special_tokens=False
-            #     )["input_ids"].squeeze(0)
-            #     predicted_ids = tokens[prompt_ids_length:start_pos]
-            #     # TODO: the alignnment below breaks with token healing, since it changes
-            #     #   the tokens in our runnng `tokens` array
-            #     for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
-            #         if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
-            #             break
-            #         prefix_id = prefix_ids[p]
-            #         predicted_id = predicted_ids[p]
-            #         if prefix_id != predicted_id:
-            #             break
-            #     assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
-            #         predicted_ids[:p]
-            #     )
-            # # Cut off our kv cache up to the valid grammar prefix
-            # past_key_values = m.prune_kv_cache(
-            #     past_key_values=past_key_values,
-            #     up_to=prompt_ids_length + p,
-            # )
-            # # Use these new past_key_values to select a candidate
-            # _tokens = tokens[:]
-            # _tokens[prompt_ids_length + p:] = tokenizer.pad_token_id
-            # m.assert_valid_token_state(_tokens, tokenizer, p)
-            # import re
-            # processors = []
-            # processors.append(
-            #     RegexLogitsProcessor(
-            #         pattern="|".join([re.escape(s) for s in str_candidates] + re_candidates),
-            #         llm=guide_model,
-            #         vocab_size=model.config.vocab_size,
-            #         is_greedy=temperature==0,
-            #         prefix_length=len(prefix),
-            #         eos_token_id=tokenizer.eos_token_id
-            #     )
-            # )
-            # _old_start_pos = p
-            # tokens, start_pos, past_key_values = m._gen_loop(
-            #     model=model,
-            #     tokenizer=tokenizer,
-            #     tokens=tokens,
-            #     past_key_values=past_key_values,
-            #     processors=processors,
-            #     start_pos=p,
-            #     total_len=total_len,
-            #     stop_at_ids=stop_at_ids,
-            #     max_new_tokens=max_new_tokens,
-            #     top_p=top_p,
-            #     temperature=temperature,
-            # )
-            # selected_candidate_ids = tokens[_old_start_pos:start_pos]
-            # selected_candidate = tokenizer.decode(selected_candidate_ids)
-            # selected_candidate = random.choice(str_candidates)
-            import guidance
-            import re
-
-            make_regex_pred = lambda pattern: (
-                partial_guidance_model
-                + prefix
-                + guidance.capture(
-                    guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
-                    "res",
-                )
-            )["res"]
-
-            selected_candidate = make_regex_pred(
-                "|".join([re.escape(s) for s in str_candidates] + re_candidates)
-            )
-            correction_type = "draft_gen"
-        # Now, try to use our selected candidate in a few ways
-        # 1) Insert our selection into the index where the error occurred, and add left/right context
-        #   Example: SELECT a b FROM table -> SELECT a, b FROM table
-        inserted_candidate_prediction = (
-            (prefix + selected_candidate + program_prediction[pos_in_stream:])
-            if pos_in_stream != -1
-            else None
-        )
-        partial_program_prediction = prefix + selected_candidate
-        if inserted_candidate_prediction is not None and validate_program(
-            inserted_candidate_prediction, parser
-        ):
-            ret_prediction = inserted_candidate_prediction
-            correction_type += "_middle_fill"
-            corrections.append(
-                Correction(
-                    original_pred=program_prediction,
-                    corrected_pred=ret_prediction,
-                    selected_candidate=selected_candidate,
-                    type=correction_type,
-                )
-            )
-            continue
-        # 2) Just keep up to the prefix + selected_candidate
-        # For example, if we just forgot a semicolon at the end of a JavaScript line
-        elif validate_program(partial_program_prediction, parser):
-            ret_prediction = partial_program_prediction
-            corrections.append(
-                Correction(
-                    original_pred=program_prediction,
-                    corrected_pred=ret_prediction,
-                    selected_candidate=selected_candidate,
-                    type=correction_type,
-                )
-            )
-            continue
-        else:
-            # 3) If rest of our query is also broken, we just keep up to the prefix + candidate
-            # and re-generate a continuation again
-            corrections.append(
-                Correction(
-                    original_pred=program_prediction,
-                    corrected_pred=partial_program_prediction,
-                    selected_candidate=selected_candidate,
-                    type=correction_type,
-                )
-            )
-            selected_candidate_ids = tokenizer(
-                selected_candidate, return_tensors="pt", add_special_tokens=False
-            )["input_ids"]
-            if (
-                tokens.shape[-1]
-                - tokens[tokens != tokenizer.pad_token_id].count_nonzero()
-                < selected_candidate_ids.shape[-1]
-            ):
-                logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
-                ret_prediction = prefix
-                continue
-            if prefix == program_prediction:
-                # Simple case: insert our candidate ids into the end of the running token array
-                tokens[
-                    start_pos : start_pos + selected_candidate_ids.shape[-1]
-                ] = selected_candidate_ids
-                # Forward pass new candidate tokens - only if length > 1
-                if selected_candidate_ids.shape[-1] > 1:
-                    past_key_values = m.forward_pass_no_sample(
-                        model=model,
-                        input_ids=selected_candidate_ids[:, :-1],
-                        past_key_values=past_key_values,
-                    )
-                start_pos += selected_candidate_ids.shape[-1]
-                string_builder.extend(
-                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
-                )
-                m.assert_valid_string_state(string_builder, tokens)
-                m.assert_valid_token_state(tokens, tokenizer, start_pos)
-            else:
-                # Align the token id breakpoint with the stop position in the prefix
-                # prefix = ' {\n "name": "Joseph Smith, 3"\n '
-                # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
-                prefix_ids = tokenizer(
-                    prefix, return_tensors="pt", add_special_tokens=False
-                )["input_ids"].squeeze(0)
-                predicted_ids = tokens[prompt_ids_length:start_pos]
-                # TODO: the alignnment below breaks with token healing, since it changes
-                #   the tokens in our runnng `tokens` array
-                for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
-                    if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
-                        break
-                    prefix_id = prefix_ids[p]
-                    predicted_id = predicted_ids[p]
-                    if prefix_id != predicted_id:
-                        break
-                assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
-                    predicted_ids[:p]
-                )
-                # Cut off our kv cache up to the valid grammar prefix
-                past_key_values = m.prune_kv_cache(
+        if prefix == program_prediction:
+            # Simple case: insert our candidate ids into the end of the running token array
+            tokens[
+                start_pos : start_pos + selected_candidate_ids.shape[-1]
+            ] = selected_candidate_ids
+            # Forward pass new candidate tokens - only if length > 1
+            if selected_candidate_ids.shape[-1] > 1:
+                past_key_values = m.forward_pass_no_sample(
+                    model=model,
+                    input_ids=selected_candidate_ids[:, :-1],
                     past_key_values=past_key_values,
-                    up_to=prompt_ids_length + p,
                 )
-                # Clear tokens after valid_completion_id index
-                tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
-                for i in range(predicted_ids.shape[-1] - p):
-                    string_builder.pop(i)
-                m.assert_valid_string_state(string_builder, tokens)
-                diff = len(prefix_ids) - p
-                if diff > 0:
-                    tokens[
-                        prompt_ids_length + p : prompt_ids_length + p + diff
-                    ] = prefix_ids[-diff:]
-                    past_key_values = m.forward_pass_no_sample(
-                        model=model,
-                        input_ids=prefix_ids[-diff:].reshape(1, -1),
-                        past_key_values=past_key_values,
-                    )
-                    string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
-                    m.assert_valid_string_state(string_builder, tokens)
-                if (
-                    selected_candidate_ids.shape[-1]
-                    > tokens[prompt_ids_length + p :].shape[0]
-                ):
-                    raise ValueError(
-                        f"Trying to insert candidate {selected_candidate}, but it is too long!"
-                    )
-                # Update tokens with our selected candidate id
+            start_pos += selected_candidate_ids.shape[-1]
+            string_builder.extend(
+                selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+            )
+            m.assert_valid_string_state(string_builder, tokens)
+            m.assert_valid_token_state(tokens, tokenizer, start_pos)
+        else:
+            # Align the token id breakpoint with the stop position in the prefix
+            # prefix = ' {\n "name": "Joseph Smith, 3"\n '
+            # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
+            prefix_ids = tokenizer(
+                prefix, return_tensors="pt", add_special_tokens=False
+            )["input_ids"].squeeze(0)
+            predicted_ids = tokens[prompt_ids_length:start_pos]
+            # TODO: the alignnment below breaks with token healing, since it changes
+            #   the tokens in our runnng `tokens` array
+            for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
+                if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
+                    break
+                prefix_id = prefix_ids[p]
+                predicted_id = predicted_ids[p]
+                if prefix_id != predicted_id:
+                    break
+            assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
+                predicted_ids[:p]
+            )
+            # Cut off our kv cache up to the valid grammar prefix
+            past_key_values = m.prune_kv_cache(
+                past_key_values=past_key_values,
+                up_to=prompt_ids_length + p,
+            )
+            # Clear tokens after valid_completion_id index
+            tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
+            for i in range(predicted_ids.shape[-1] - p):
+                string_builder.pop(i)
+            m.assert_valid_string_state(string_builder, tokens)
+            diff = len(prefix_ids) - p
+            if diff > 0:
                 tokens[
-                    prompt_ids_length
-                    + p
-                    + diff : prompt_ids_length
-                    + p
-                    + diff
-                    + selected_candidate_ids.shape[-1]
-                ] = selected_candidate_ids
-                # Forward pass new candidate tokens - only if length > 1
-                if selected_candidate_ids.shape[-1] > 1:
-                    past_key_values = m.forward_pass_no_sample(
-                        model=model,
-                        input_ids=selected_candidate_ids[:, :-1],
-                        past_key_values=past_key_values,
-                    )
-                start_pos = (
-                    prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
+                    prompt_ids_length + p : prompt_ids_length + p + diff
+                ] = prefix_ids[-diff:]
+                past_key_values = m.forward_pass_no_sample(
+                    model=model,
+                    input_ids=prefix_ids[-diff:].reshape(1, -1),
+                    past_key_values=past_key_values,
                 )
-                string_builder.extend(
-                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
-                )
+                string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
                 m.assert_valid_string_state(string_builder, tokens)
-                m.assert_valid_token_state(tokens, tokenizer, start_pos)
+            if (
+                selected_candidate_ids.shape[-1]
+                > tokens[prompt_ids_length + p :].shape[0]
+            ):
+                raise ValueError(
+                    f"Trying to insert candidate {selected_candidate}, but it is too long!"
+                )
+            # Update tokens with our selected candidate id
+            tokens[
+                prompt_ids_length
+                + p
+                + diff : prompt_ids_length
+                + p
+                + diff
+                + selected_candidate_ids.shape[-1]
+            ] = selected_candidate_ids
+            # Forward pass new candidate tokens - only if length > 1
+            if selected_candidate_ids.shape[-1] > 1:
+                past_key_values = m.forward_pass_no_sample(
+                    model=model,
+                    input_ids=selected_candidate_ids[:, :-1],
+                    past_key_values=past_key_values,
+                )
+            start_pos = prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
+            string_builder.extend(
+                selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+            )
+            m.assert_valid_string_state(string_builder, tokens)
+            m.assert_valid_token_state(tokens, tokenizer, start_pos)
         num_correction_left -= 1
         logger.debug(
             Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
@@ -476,6 +322,50 @@ def guide(
             raw=True,
             include=["text/html"],
         )
+    return GrammarGuideOutput(
+        response=ret_prediction,
+        num_grammar_corrections=len(corrections),
+        correction_log=corrections,
+        process_time_seconds=time.time() - start,
+    )
+
+
+def _generic_guide(
+    model: Callable[[str], str],
+    parser: EarleyParser,
+    prompt: str,
+    draft_model: Optional[guidance.models.Model],
+    seed_str: Optional[str],
+    max_grammar_corrections: int,
+) -> GrammarGuideOutput:
+    start = time.time()
+    corrections = []
+    num_correction_left = max_grammar_corrections
+    ret_prediction, initial_prediction, selected_candidate = None, None, None
+    prefix: str = prepare_initial_prefix(parser=parser, seed_str=seed_str)
+    while num_correction_left > 0 and ret_prediction is None:
+        program_prediction: str = model(prompt + prefix)
+        prefix, ret_prediction, correction = handle_program_prediction(
+            program_prediction=program_prediction,
+            parser=parser,
+            draft_model=draft_model,
+        )
+        if correction is not None:
+            corrections.append(correction)
+        if ret_prediction is not None:
+            continue
+        prefix += correction.selected_candidate
+        num_correction_left -= 1
+        logger.debug(
+            Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
+        )
+    if ret_prediction is None:
+        logger.debug(
+            Fore.RED
+            + f"Cannot find a valid prediction after {max_grammar_corrections} retries"
+            + Fore.RESET
+        )
+        ret_prediction = prefix
     return GrammarGuideOutput(
         response=ret_prediction,
         num_grammar_corrections=len(corrections),
