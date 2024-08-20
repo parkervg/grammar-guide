@@ -347,7 +347,9 @@ def guide(
                 # Forward pass new candidate tokens - only if length > 1
                 if selected_candidate_ids.shape[-1] > 1:
                     past_key_values = m.forward_pass_no_sample(
-                        model=model, input_ids=selected_candidate_ids[:, :-1], past_key_values=past_key_values
+                        model=model,
+                        input_ids=selected_candidate_ids[:, :-1],
+                        past_key_values=past_key_values,
                     )
                 start_pos += selected_candidate_ids.shape[-1]
                 string_builder.extend(
@@ -391,7 +393,9 @@ def guide(
                         prompt_ids_length + p : prompt_ids_length + p + diff
                     ] = prefix_ids[-diff:]
                     past_key_values = m.forward_pass_no_sample(
-                        model=model, input_ids=prefix_ids[-diff:].reshape(1, -1), past_key_values=past_key_values
+                        model=model,
+                        input_ids=prefix_ids[-diff:].reshape(1, -1),
+                        past_key_values=past_key_values,
                     )
                     string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
                     m.assert_valid_string_state(string_builder, tokens)
@@ -414,9 +418,13 @@ def guide(
                 # Forward pass new candidate tokens - only if length > 1
                 if selected_candidate_ids.shape[-1] > 1:
                     past_key_values = m.forward_pass_no_sample(
-                        model=model, input_ids=selected_candidate_ids[:, :-1], past_key_values=past_key_values
+                        model=model,
+                        input_ids=selected_candidate_ids[:, :-1],
+                        past_key_values=past_key_values,
                     )
-                start_pos = prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
+                start_pos = (
+                    prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
+                )
                 string_builder.extend(
                     selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
                 )
