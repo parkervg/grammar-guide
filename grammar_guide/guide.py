@@ -3,8 +3,9 @@ from collections.abc import Collection
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import time
 from colorama import Fore
-import guidance
 from IPython.display import display
+import logging
+import guidance
 
 from .minEarley.parser import EarleyParser
 from .typedefs import GrammarGuideOutput, StringType
@@ -45,6 +46,10 @@ def guide(
     max_new_tokens: int = 32,
     verbose: bool = True,
 ) -> GrammarGuideOutput:
+    if verbose:
+        logger.setLevel(logging.DEBUG)
+    else:
+        logger.setLevel(logging.ERROR)
     if hasattr(model, "config"):
         return _transformers_guide(
             model=model,
@@ -322,11 +327,12 @@ def _transformers_guide(
             raw=True,
             include=["text/html"],
         )
+    process_time_seconds = time.time() - start
     return GrammarGuideOutput(
         response=ret_prediction,
         num_grammar_corrections=len(corrections),
         correction_log=corrections,
-        process_time_seconds=time.time() - start,
+        process_time_seconds=process_time_seconds,
     )
 
 
@@ -366,9 +372,10 @@ def _generic_guide(
             + Fore.RESET
         )
         ret_prediction = prefix
+    process_time_seconds = time.time() - start
     return GrammarGuideOutput(
         response=ret_prediction,
         num_grammar_corrections=len(corrections),
         correction_log=corrections,
-        process_time_seconds=time.time() - start,
+        process_time_seconds=process_time_seconds,
     )
