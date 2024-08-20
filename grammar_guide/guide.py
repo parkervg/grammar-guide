@@ -1,4 +1,3 @@
-import random
 import time
 from typing import Optional, Tuple, Set, Any
 from collections.abc import Collection
@@ -124,6 +123,18 @@ def guide(
     corrections = []
     partial_guidance_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
+
+    # Check to see if our grammar gives us any freebies at the beginning of prediction
+    # E.g. maybe in our SQL grammar, we can only begin with 'SELECT'
+    if prefix == "":
+        _, str_candidates, re_candidates, _ = obtain_correction_pairs(
+            prediction=prefix,
+            parser=parser,
+            candidate_limit=64,
+        )
+        if len(re_candidates) == 0 and len(str_candidates) == 1:
+            prefix = str_candidates.pop()
+
     if prefix:
         prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
             "input_ids"
@@ -262,24 +273,21 @@ def guide(
             # selected_candidate_ids = tokens[_old_start_pos:start_pos]
             # selected_candidate = tokenizer.decode(selected_candidate_ids)
             # selected_candidate = random.choice(str_candidates)
-            if False:
-                import guidance
-                import re
+            import guidance
+            import re
 
-                make_regex_pred = lambda pattern: (
-                    partial_guidance_model
-                    + prefix
-                    + guidance.capture(
-                        guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
-                        "res",
-                    )
-                )["res"]
-
-                selected_candidate = make_regex_pred(
-                    "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+            make_regex_pred = lambda pattern: (
+                partial_guidance_model
+                + prefix
+                + guidance.capture(
+                    guidance.with_temperature(guidance.regex(pattern=pattern), 0.0),
+                    "res",
                 )
-            else:
-                selected_candidate = random.choice(str_candidates)
+            )["res"]
+
+            selected_candidate = make_regex_pred(
+                "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+            )
             correction_type = "draft_gen"
         # Now, try to use our selected candidate in a few ways
         # 1) Insert our selection into the index where the error occurred, and add left/right context
