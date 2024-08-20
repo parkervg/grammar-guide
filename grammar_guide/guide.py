@@ -274,18 +274,10 @@ def guide(
                         "res",
                     )
                 )["res"]
-                from pyformlang.regular_expression.regex_objects import (
-                    MisformedRegexError,
-                )
 
-                try:
-                    selected_candidate = make_regex_pred(
-                        "|".join([re.escape(s) for s in str_candidates] + re_candidates)
-                    )
-                except MisformedRegexError:
-                    selected_candidate = make_regex_pred(
-                        "|".join([re.escape(s) for s in str_candidates])
-                    )
+                selected_candidate = make_regex_pred(
+                    "|".join([re.escape(s) for s in str_candidates] + re_candidates)
+                )
             else:
                 selected_candidate = random.choice(str_candidates)
             correction_type = "draft_gen"
@@ -297,7 +289,6 @@ def guide(
             if pos_in_stream != -1
             else None
         )
-        # print(f"Selected candidate {selected_candidate}")
         partial_program_prediction = prefix + selected_candidate
         if inserted_candidate_prediction is not None and validate_program(
             inserted_candidate_prediction, parser
@@ -355,8 +346,8 @@ def guide(
                 ] = selected_candidate_ids
                 # Forward pass new candidate tokens - only if length > 1
                 if selected_candidate_ids.shape[-1] > 1:
-                    m.forward_pass_no_sample(
-                        model=model, input_ids=selected_candidate_ids[:, :-1]
+                    past_key_values = m.forward_pass_no_sample(
+                        model=model, input_ids=selected_candidate_ids[:, :-1], past_key_values=past_key_values
                     )
                 start_pos += selected_candidate_ids.shape[-1]
                 string_builder.extend(
@@ -393,14 +384,15 @@ def guide(
                 tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
                 for i in range(predicted_ids.shape[-1] - p):
                     string_builder.pop(i)
-                string_builder.contiguous_pops = 0
                 m.assert_valid_string_state(string_builder, tokens)
                 diff = len(prefix_ids) - p
                 if diff > 0:
                     tokens[
                         prompt_ids_length + p : prompt_ids_length + p + diff
                     ] = prefix_ids[-diff:]
-                    # TODO: reshape prefix_ids[-diff] to (1, 1) if a 0-dimensional tensor
+                    past_key_values = m.forward_pass_no_sample(
+                        model=model, input_ids=prefix_ids[-diff:].reshape(1, -1), past_key_values=past_key_values
+                    )
                     string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
                     m.assert_valid_string_state(string_builder, tokens)
                 if (
@@ -421,8 +413,8 @@ def guide(
                 ] = selected_candidate_ids
                 # Forward pass new candidate tokens - only if length > 1
                 if selected_candidate_ids.shape[-1] > 1:
-                    m.forward_pass_no_sample(
-                        model=model, input_ids=selected_candidate_ids[:, :-1]
+                    past_key_values = m.forward_pass_no_sample(
+                        model=model, input_ids=selected_candidate_ids[:, :-1], past_key_values=past_key_values
                     )
                 start_pos = prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
                 string_builder.extend(
