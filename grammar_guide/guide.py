@@ -19,6 +19,12 @@ from .typedefs import GrammarGuideOutput, Correction, StringType
 DEVICE = "cpu"
 
 
+def is_interactive():
+    import __main__ as main
+
+    return not hasattr(main, "__file__")
+
+
 class InvalidTokenState(ValueError):
     pass
 
@@ -79,6 +85,7 @@ def guide(
     top_p: float = 0.9,
     temperature: float = 0.6,
     max_new_tokens: int = 32,
+    verbose: bool = True,
 ):
     start = time.time()
     if all([x is None for x in {lark_grammar_str, lark_grammar_filepath}]):
@@ -102,6 +109,8 @@ def guide(
         stop_at_tokenizer_out = tokenizer(
             stop_at, return_tensors="pt", padding=True, add_special_tokens=False
         )
+        # Get all tokens which include a 'stop_at' text as a prefix
+        # stop_at_prefix_ids = sum([guide_model.prefix_matches(s) for s in stop_at], [])
         stop_at_ids = stop_at_tokenizer_out["input_ids"]
     prompt_input_ids = tokenizer(prompt, return_tensors="pt", padding=True)[
         "input_ids"
@@ -113,7 +122,10 @@ def guide(
         # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
     )
     string_builder = m.TransformersStringBuilder(
-        tokenizer, starting_ids=prompt_input_ids, write_to_html=True
+        tokenizer,
+        starting_ids=prompt_input_ids,
+        log_changes=verbose,
+        write_to_html=is_interactive(),
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
@@ -453,16 +465,17 @@ def guide(
             + Fore.RESET
         )
         ret_prediction = prefix
-    display(
-        {
-            "text/html": "<div style='margin: 0px; padding: 0px; font-family: ColfaxAI, Arial; font-size: 20px;'"
-            + "".join(string_builder.html)
-            + "</div>"
-        },
-        display_id=0,
-        raw=True,
-        include=["text/html"],
-    )
+    if verbose and is_interactive():
+        display(
+            {
+                "text/html": "<div style='margin: 0px; padding: 0px; font-family: ColfaxAI, Arial; font-size: 20px;'"
+                + "".join(string_builder.html)
+                + "</div>"
+            },
+            display_id=0,
+            raw=True,
+            include=["text/html"],
+        )
     return GrammarGuideOutput(
         response=ret_prediction,
         num_grammar_corrections=len(corrections),

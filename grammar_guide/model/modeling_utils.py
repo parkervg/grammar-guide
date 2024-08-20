@@ -37,12 +37,14 @@ class TransformersStringBuilder:
         self,
         tokenizer,
         starting_ids: Optional[torch.tensor] = None,
+        log_changes: bool = False,
         write_to_html: bool = False,
     ):
         self.tokenizer = tokenizer
         self.token_strings = []
         self._joint_string = ""
         self.write_to_html = write_to_html
+        self.log_changes = log_changes
         self.html = []
         self.contiguous_pops = 0
         if starting_ids is not None:
@@ -54,23 +56,23 @@ class TransformersStringBuilder:
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = new_str[len(self._joint_string) :]
         self._joint_string = new_str
-        if self.write_to_html:
+        if self.log_changes and self.write_to_html:
             assert string_type is not None
             self.html += [
                 self.STRING_TYPE_TO_FMT.get(string_type)(self.tokenizer.decode(i))
                 for i in new_ids
             ]
-        # clear_and_print(self._joint_string)
+        elif self.log_changes:
+            clear_and_print(self._joint_string)
         return diff_str
 
     def pop(self, i: Optional[int] = None, token_healing: bool = False):
         """Remove the last token from the string and return text it removed."""
         self.token_strings.pop()
-        # if self.write_to_html and token_healing:
-        #     # Don't render token healing backtracks in html
-        #     # This is info overload for the user
-        #     self.html.pop()
-        if self.write_to_html:
+        new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
+        diff_str = self._joint_string[len(new_str) :]
+        self._joint_string = new_str
+        if self.log_changes and self.write_to_html:
             assert i is not None
             i += 1
             # Change color to red
@@ -85,10 +87,8 @@ class TransformersStringBuilder:
                 r"\2",
                 self.html[-i],
             )
-        new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
-        diff_str = self._joint_string[len(new_str) :]
-        self._joint_string = new_str
-        # clear_and_print(self._joint_string)
+        elif self.log_changes:
+            clear_and_print(self._joint_string)
         return diff_str
 
     def __str__(self):
