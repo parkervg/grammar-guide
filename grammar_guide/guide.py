@@ -424,7 +424,7 @@ def guide(
                     m.forward_pass_no_sample(
                         model=model, input_ids=selected_candidate_ids[:, :-1]
                     )
-                start_pos = prompt_ids_length + p + diff + 1
+                start_pos = prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
                 string_builder.extend(
                     selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
                 )
