@@ -1,4 +1,4 @@
-from typing import Literal, List
+from typing import Literal, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -40,6 +40,7 @@ class GrammarGuideOutput:
     num_grammar_corrections: int
     correction_log: List[Correction]
     process_time_seconds: float
+    html: Optional[str] = None
 
     def to_list(self):
         return [i.to_dict() for i in self.correction_log]

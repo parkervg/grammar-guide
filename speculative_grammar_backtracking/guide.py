@@ -44,6 +44,7 @@ def guide(
     top_p: float = 0.9,
     temperature: float = 0.6,
     max_new_tokens: int = 32,
+    save_html: bool = True,
     verbose: bool = True,
 ) -> GrammarGuideOutput:
     if verbose:
@@ -64,6 +65,7 @@ def guide(
             top_p=top_p,
             temperature=temperature,
             max_new_tokens=max_new_tokens,
+            save_html=save_html,
             verbose=verbose,
         )
     assert isinstance(model, Callable)
@@ -90,6 +92,7 @@ def _transformers_guide(
     top_p: float,
     temperature: float,
     max_new_tokens: int,
+    save_html: bool,
     verbose: bool,
 ):
     start = time.time()
@@ -115,7 +118,7 @@ def _transformers_guide(
         tokenizer,
         starting_ids=prompt_input_ids,
         log_changes=verbose,
-        write_to_html=is_interactive(),
+        write_to_html=save_html,
     )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
@@ -312,13 +315,17 @@ def _transformers_guide(
             + Fore.RESET
         )
         ret_prediction = prefix
+
+    html = None
+    if save_html or (verbose and is_interactive()):
+        html = (
+            "<div style='margin: 0px; padding: 0px; font-family: ColfaxAI, Arial; font-size: 20px;'"
+            + "".join(string_builder.html)
+            + "</div>"
+        )
     if verbose and is_interactive():
         display(
-            {
-                "text/html": "<div style='margin: 0px; padding: 0px; font-family: ColfaxAI, Arial; font-size: 20px;'"
-                + "".join(string_builder.html)
-                + "</div>"
-            },
+            {"text/html": html},
             display_id=0,
             raw=True,
             include=["text/html"],
@@ -329,6 +336,7 @@ def _transformers_guide(
         num_grammar_corrections=len(corrections),
         correction_log=corrections,
         process_time_seconds=process_time_seconds,
+        html=html,
     )
 
 
