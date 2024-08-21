@@ -1,6 +1,7 @@
 from typing import Tuple, Set, Optional
 
 import guidance.models
+from guidance.library._regex import UnsupportedRegexError
 
 from .minEarley.parser import EarleyParser
 from .typedefs import Correction
@@ -94,10 +95,13 @@ def handle_program_prediction(
                 "res",
             )
         )["res"]
-
-        selected_candidate = make_regex_pred(
-            "|".join([re.escape(s) for s in str_candidates] + re_candidates)
-        )
+        escaped_str_candidates = [re.escape(s) for s in str_candidates]
+        try:
+            selected_candidate = make_regex_pred(
+                "|".join(escaped_str_candidates + re_candidates)
+            )
+        except UnsupportedRegexError:
+            selected_candidate = make_regex_pred("|".join(escaped_str_candidates))
         correction_type = "draft_gen"
     # Now, try to use our selected candidate in a few ways
     # 1) Insert our selection into the index where the error occurred, and add left/right context

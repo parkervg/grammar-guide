@@ -110,11 +110,7 @@ def _transformers_guide(
         "input_ids"
     ].squeeze(0)
     prompt_ids_length = prompt_input_ids.shape[0]
-    total_len = min(
-        model.config.max_position_embeddings,
-        512
-        # prompt_ids_length + (max_new_tokens * max_grammar_corrections),
-    )
+    total_len = model.config.max_position_embeddings
     string_builder = m.TransformersStringBuilder(
         tokenizer,
         starting_ids=prompt_input_ids,

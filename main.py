@@ -20,65 +20,57 @@ if __name__ == "__main__":
     """
     from textwrap import dedent
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    import guidance
-    import time
     import json
 
-    from grammar_guide import guide
+    from speculative_grammar_backtracking import guide, load_parser
 
     model_name_or_path = "HuggingFaceTB/SmolLM-135M"
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
+    parser = load_parser(lark_grammar_filepath="./grammars/json.lark")
 
-    examples = [
-        {
-            "prompt": dedent(
-                """
-        Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
+    # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
+    # res = guide(
+    #     model,
+    #     tokenizer,
+    #     parser=parser,
+    #     # seed_str="""{"name":""",
+    #     prompt=dedent(
+    #         """
+    #     Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
+    #     """
+    #     ),
+    #     stop_at=["END", "---"],
+    #     draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+    #     max_grammar_corrections=10,
+    #     max_new_tokens=10,
+    #     temperature=0.3,
+    # )
+
+    from transformers import pipeline
+
+    pipe = pipeline(
+        "text-generation",
+        model=model,
+        tokenizer=tokenizer,
+        device_map="auto",
+        max_new_tokens=30,
+        return_full_text=False,
+    )
+
+    prompt = dedent(
         """
-            ),
-            "lark_grammar_filepath": "./grammars/json.lark",
-            "seed_str": '{"name":',
-            "stop_at": ["```"],
-        },
-        {
-            "prompt": dedent(
-                "Hello, I am your teacher. Today I will write you a SQL query demonstrating `INNER JOIN` and `LIMIT`."
-            ),
-            "lark_grammar_filepath": "./grammars/sql.lark",
-            "seed_str": "SELECT",
-            "stop_at": [";", "```"],
-        },
-    ]
-    if True:
-        max_new_tokens = 20
-        max_grammar_corrections = 10
-        # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
-        start = time.time()
-        for example in examples:
-            res = guide(
-                model,
-                tokenizer,
-                **example,
-                token_healing=True,
-                draft_model=guidance.models.Transformers(
-                    model_name_or_path, echo=False
-                ),
-                max_grammar_corrections=max_grammar_corrections,
-                max_new_tokens=max_new_tokens,
-                temperature=0.0,
-            )
-            for c in res.correction_log:
-                print("Original:")
-                print(c.original_pred)
-                print(f"Corrected (using {c.type}):")
-                print(c.corrected_pred)
-                print("------------------------------------------------")
-            print("\n\n\n")
-            try:
-                print(json.dumps(json.loads(res.response), indent=4))
-            except:
-                print(res.response)
-            # print(json.dumps(res.to_list(), indent=4))
-            print(time.time() - start)
-            break
+    Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
+    """
+    )
+    res = guide(
+        model=lambda x: pipe(x)[0]["generated_text"].rstrip(prompt),
+        parser=parser,
+        seed_str="""{"name":""",
+        prompt=prompt,
+    )
+
+    try:
+        print(json.dumps(json.loads(res.response), indent=4))
+    except:
+        print(res.response)
