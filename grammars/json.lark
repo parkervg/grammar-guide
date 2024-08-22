@@ -1,21 +1,10 @@
-?start: value
+?start: object
 
-?value: object
-      | array
-      | string
-      | SIGNED_NUMBER      -> number
-      | "true"             -> true
-      | "false"            -> false
-      | "null"             -> null
-
-array  : "[" [value ("," value)*] "]"
-object : "{" [pair ("," pair)~5] "}"
-pair   : string ":" value
+object : "{" [pair ("," pair)~10] "}"
+pair   : string ":" string
 
 inner: /([^"]|\\\")+/ |
 string : "\"" inner "\""
 
-%import common.SIGNED_NUMBER
 %import common.WS
-
 %ignore WS
