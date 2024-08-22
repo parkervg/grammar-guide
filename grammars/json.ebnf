@@ -9,6 +9,6 @@ object ::= "{" ws string ":" ws value "," ws string ":" ws value "," ws string "
 
 value  ::= string
 
-string ::= "\"" [ \t!#-\[\]-~]* "\"" ws
+string ::= "\"" [ \t!#-\[\]-~]+ "\"" ws
 
 ws ::= ([ \t\n] ws)?
