@@ -105,13 +105,15 @@ def _transformers_guide(
         tokenizer.padding_side = "right"
         stop_at_tokenizer_out = tokenizer(
             stop_at, return_tensors="pt", padding=True, add_special_tokens=False
-        )
+        ).to(model.device)
         # Get all tokens which include a 'stop_at' text as a prefix
         # stop_at_prefix_ids = sum([guide_model.prefix_matches(s) for s in stop_at], [])
         stop_at_ids = stop_at_tokenizer_out["input_ids"]
-    prompt_input_ids = tokenizer(prompt, return_tensors="pt", padding=True)[
-        "input_ids"
-    ].squeeze(0)
+    prompt_input_ids = (
+        tokenizer(prompt, return_tensors="pt", padding=True)
+        .to(model.device)["input_ids"]
+        .squeeze(0)
+    )
     prompt_ids_length = prompt_input_ids.shape[0]
     total_len = model.config.max_position_embeddings
     string_builder = m.TransformersStringBuilder(
@@ -120,7 +122,7 @@ def _transformers_guide(
         log_changes=verbose,
         write_to_html=save_html,
     )
-    tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id)
+    tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id, model.device)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
     draft_model = draft_model + prompt
     start_pos = len(prompt_input_ids)
@@ -131,9 +133,11 @@ def _transformers_guide(
     prefix: str = prepare_initial_prefix(parser=parser, seed_str=seed_str)
 
     if prefix:
-        prefix_ids = tokenizer(prefix, return_tensors="pt", padding=True)[
-            "input_ids"
-        ].squeeze(0)
+        prefix_ids = (
+            tokenizer(prefix, return_tensors="pt", padding=True)
+            .to(model.device)["input_ids"]
+            .squeeze(0)
+        )
         tokens[
             len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
         ] = prefix_ids
@@ -203,7 +207,7 @@ def _transformers_guide(
 
         selected_candidate_ids = tokenizer(
             selected_candidate, return_tensors="pt", add_special_tokens=False
-        )["input_ids"]
+        ).to(model.device)["input_ids"]
         if (
             tokens.shape[-1] - tokens[tokens != tokenizer.pad_token_id].count_nonzero()
             < selected_candidate_ids.shape[-1]
@@ -233,9 +237,11 @@ def _transformers_guide(
             # Align the token id breakpoint with the stop position in the prefix
             # prefix = ' {\n "name": "Joseph Smith, 3"\n '
             # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
-            prefix_ids = tokenizer(
-                prefix, return_tensors="pt", add_special_tokens=False
-            )["input_ids"].squeeze(0)
+            prefix_ids = (
+                tokenizer(prefix, return_tensors="pt", add_special_tokens=False)
+                .to(model.device)["input_ids"]
+                .squeeze(0)
+            )
             predicted_ids = tokens[prompt_ids_length:start_pos]
             # TODO: the alignnment below breaks with token healing, since it changes
             #   the tokens in our runnng `tokens` array

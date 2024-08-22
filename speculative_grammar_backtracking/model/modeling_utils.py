@@ -16,7 +16,6 @@ import pygtrie
 from ..typedefs import StringType
 
 torch.manual_seed(42)
-device = torch.device("cpu")
 
 GREEN_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 165, 0, 0.25);'>"
 BLUE_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 0, 165, 0.25);'>"
@@ -154,7 +153,7 @@ def assert_valid_string_state(
     )
 
 
-def initialize_tokens(total_len: int, pad_token_id: int):
+def initialize_tokens(total_len: int, pad_token_id: int, device: torch.device):
     return torch.full(
         (total_len,),
         pad_token_id,
@@ -219,10 +218,10 @@ def contains_stop_sequence(
         mode="constant",
         value=pad_token_id,
     ).expand(T, T)
-    arange1 = torch.arange(T).view((T, 1)).repeat((1, T))
-    arange2 = ((arange1 + torch.arange(T)) % T).T
+    arange1 = torch.arange(T, device=tokens.device).view((T, 1)).repeat((1, T))
+    arange2 = ((arange1 + torch.arange(T, device=tokens.device)) % T).T
     s = torch.gather(s, -1, arange2.T)
-    mask = torch.fliplr(torch.ones_like(s).tril().T)
+    mask = torch.fliplr(torch.ones_like(s, device=tokens.device).tril().T)
     s = torch.unique(s * mask, dim=0)
     stacked = torch.cat((s, stop_at_ids), dim=0)
     return torch.unique(stacked, dim=0).shape != stacked.shape
@@ -277,7 +276,7 @@ def _gen_loop(
     if processors is None:
         processors = []
     prev_pos = start_pos - 1
-    eos_reached = torch.tensor([False], device=device)
+    eos_reached = torch.tensor([False], device=model.device)
     # p = parser.parse_interactive() if parser else None
     new_token_pos = 0
     for new_token_pos, cur_pos in enumerate(range(start_pos, total_len)):
