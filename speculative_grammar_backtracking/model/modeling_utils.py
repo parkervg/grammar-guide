@@ -14,6 +14,7 @@ import re
 import pygtrie
 
 from ..typedefs import StringType
+from ..utils import is_interactive
 
 torch.manual_seed(42)
 
@@ -55,13 +56,13 @@ class TransformersStringBuilder:
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = new_str[len(self._joint_string) :]
         self._joint_string = new_str
-        if self.log_changes and self.write_to_html:
+        if self.write_to_html:
             assert string_type is not None
             self.html += [
                 self.STRING_TYPE_TO_FMT.get(string_type)(self.tokenizer.decode(i))
                 for i in new_ids
             ]
-        elif self.log_changes:
+        if self.log_changes and not is_interactive():
             clear_and_print(self._joint_string)
         return diff_str
 
@@ -71,7 +72,7 @@ class TransformersStringBuilder:
         new_str = self.tokenizer.convert_tokens_to_string(self.token_strings)
         diff_str = self._joint_string[len(new_str) :]
         self._joint_string = new_str
-        if self.log_changes and self.write_to_html:
+        if self.write_to_html:
             assert i is not None
             i += 1
             # Change color to red
@@ -86,7 +87,7 @@ class TransformersStringBuilder:
                 r"\2",
                 self.html[-i],
             )
-        elif self.log_changes:
+        if self.log_changes and not is_interactive():
             clear_and_print(self._joint_string)
         return diff_str
 
@@ -192,6 +193,9 @@ def contains_stop_sequence(
     tokens: torch.tensor, stop_at_ids: torch.tensor, pad_token_id: int
 ) -> bool:
     """
+    Looks to be on-par with the huggingface StopStringCriteria?
+    https://github.com/huggingface/transformers/blob/main/src/transformers/generation/stopping_criteria.py#L141
+
     Given a `token` array of shape (max_seq_len,), returns `True` if `tokens` ends in any of the
     row-wise entries of `stop_at_ids` of shape (batch_size, max_seq_len), and `False` if not.
 
