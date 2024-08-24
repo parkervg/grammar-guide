@@ -360,7 +360,7 @@ def _generic_guide(
     ret_prediction, initial_prediction, selected_candidate = None, None, None
     prefix: str = prepare_initial_prefix(parser=parser, seed_str=seed_str)
     while num_correction_left > 0 and ret_prediction is None:
-        program_prediction: str = model(prompt + prefix)
+        program_prediction: str = prefix + model(prompt + prefix)
         prefix, ret_prediction, correction = handle_program_prediction(
             program_prediction=program_prediction,
             parser=parser,
