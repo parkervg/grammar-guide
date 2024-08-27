@@ -1,9 +1,8 @@
 <div align="center"><h1> Grammar Guide </h1>
-<p align="center">
     Speculative grammar backtracking algorithm to perform grammar-constrained decoding with <i>any</i> text generation function (OpenAI, Anthropic, etc.)
-  </p>
 </div>
-<hr>
+
+---
 
 This repo is an implementation of the decoding mechanism described in Section 3.2 of [Grammar Prompting for Domain-Specific Language
 Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino). I refer to the general algorithm as **speculative grammar backtracking**.
