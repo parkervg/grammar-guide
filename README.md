@@ -11,7 +11,8 @@ It is a form of (rather lenient) constrained decoding, and can be used to guide 
   - OpenAI, Anthropic etc. - as long as you can provide some `generate(prompt: str) -> str` function!
 - Efficient re-use of KV cache for all CausalLM Transformer models
   - Optimistic, speculative decoding = no need to manually update to support new tokenizers
-
+- Visualization and logging of grammar corrections 
+- Token healing to ensure high probability continuations
 
 ## Examples
 
@@ -32,15 +33,17 @@ res = guide(
   model,
   tokenizer=tokenizer,
   parser=parser,
-  prompt="Here's a long, complex SQL function:",
+  prompt="Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n",
   draft_model=guidance.models.Transformers(
       model_name_or_path, echo=False
   ),
-  stop_at=['```', ';'],
+  stop_at=['```'],
+  max_new_tokens=20,
   max_grammar_corrections=20,
   temperature=0.0
 )
 ```
+![jupyer-visualization](img/jupyter-example.png)
 
 ### With General API-based Providers
 ```python
