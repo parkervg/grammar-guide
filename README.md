@@ -1,8 +1,12 @@
-# Grammar Guide
-
+<div align="center"><h1> Grammar Guide </h1>
+<p align="center">
+    Speculative grammar backtracking algorithm to perform grammar-constrained decoding with <i>any</i> text generation function (OpenAI, Anthropic, etc.)
+  </p>
+</div>
+<hr>
 
 This repo is an implementation of the decoding mechanism described in Section 3.2 of [Grammar Prompting for Domain-Specific Language
-Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino). I refer to it as speculative grammar backtracking.
+Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino). I refer to the general algorithm as **speculative grammar backtracking**.
 
 It is a form of (rather lenient) constrained decoding, and can be used to guide even proprietary, black-box LLM APIs according to some context-free grammar. 
 
@@ -84,6 +88,8 @@ res = gg.guide(
 )
 ```
 
+## Documentation
+
 As described in the paper, one way many existing libraries achieve this goal is by enforcing some constraint at each decoding timestep. For local models, it is possible to pre-process the logit masks such that this is relatively efficient. However, for closed models (think OpenAI, Anthropic, etc.), this can be 'prohitively expensive', since it would require calling the API at each timestep with the full prompt and valid continuation tokens.
 
 Instead, this library takes an optimistic approach to constrained decoding. Autoregressive language models are only going to get better, and often times the overhead of strict, mask-driven constrained decoding isn't worth it. 
@@ -119,7 +125,7 @@ main_model.predict(prefix + selected_candidate)
 The below benchmarks are done on a single A100. They measure the time it takes the respective methods to generate a JSON with exactly 10 string key-value pairs, using [HuggingFaceTB/SmolLM-360M](https://huggingface.co/HuggingFaceTB/SmolLM-360M) and the below prompt.
 > Here is a really long JSON object, with 10 keys, using only string values:\n\n```json\n
 
-For most general usecases when using local Transformers models, I highly recommend the library (transformers-CFG)[https://github.com/epfl-dlab/transformers-CFG]! 
+For most general usecases when using local Transformers models, I highly recommend the library [transformers-CFG](https://github.com/epfl-dlab/transformers-CFG)! 
 
 | Name                                           |   Time Elapsed |   Generation Time |   Tokens Per Second |
 |:-----------------------------------------------|---------------:|------------------:|--------------------:|
