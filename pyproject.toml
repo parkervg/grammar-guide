@@ -1,3 +1,45 @@
+[build-system]
+requires = ["setuptools >= 61.0"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "grammar-guide"
+description = "Speculative grammar backtracking algorithm for LLM decoding conforming to some lark context-free grammar (CFG)"
+authors = [{ "name" = "Parker Glenn", "email" = "parkervg5@gmail.com" }]
+readme = "README.md"
+requires-python = ">=3.9"
+license = { file = "LICENSE" }
+keywords = [
+    "language models",
+    "structured generation",
+    "constrained decoding",
+    "formal grammars",
+]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Text Processing",
+    "Programming Language :: Python :: 3",
+]
+dependencies = [
+    "guidance>=0.1.16",
+    "numpy<2",
+    "exrex",
+    "lark",
+    "colorama",
+    "pygtrie",
+    "ipython",
+]
+dynamic = ["version"]
+
+[project.urls]
+Documentation = "https://github.com/parkervg/grammar-guide"
+
+[tool.setuptools]
+packages = ["grammar_guide"]
+
 [tool.black]
 line-length = 88
 
@@ -7,10 +49,55 @@ select = ["B"]
 # E501: Line length violations
 # B032: Possible unintentional type annotation
 # B028: No explicit stacklevel argument found
-ignore = ["E501", "B032", "B028", "B005", "B023"]
+ignore = ["E501", "B032", "B028", "B005"]
 
 # Allow autofix for all enabled rules (when `--fix`) is provided.
-fixable = ["A", "B", "C", "D", "E", "F", "G", "I", "N", "Q", "S", "T", "W", "ANN", "ARG", "BLE", "COM", "DJ", "DTZ", "EM", "ERA", "EXE", "FBT", "ICN", "INP", "ISC", "NPY", "PD", "PGH", "PIE", "PL", "PT", "PTH", "PYI", "RET", "RSE", "RUF", "SIM", "SLF", "TCH", "TID", "TRY", "UP", "YTT"]
+fixable = [
+    "A",
+    "B",
+    "C",
+    "D",
+    "E",
+    "F",
+    "G",
+    "I",
+    "N",
+    "Q",
+    "S",
+    "T",
+    "W",
+    "ANN",
+    "ARG",
+    "BLE",
+    "COM",
+    "DJ",
+    "DTZ",
+    "EM",
+    "ERA",
+    "EXE",
+    "FBT",
+    "ICN",
+    "INP",
+    "ISC",
+    "NPY",
+    "PD",
+    "PGH",
+    "PIE",
+    "PL",
+    "PT",
+    "PTH",
+    "PYI",
+    "RET",
+    "RSE",
+    "RUF",
+    "SIM",
+    "SLF",
+    "TCH",
+    "TID",
+    "TRY",
+    "UP",
+    "YTT",
+]
 unfixable = []
 
 # Exclude a variety of commonly ignored directories.
@@ -39,7 +126,7 @@ exclude = [
     # Added
     "third_party",
     "__init__.py", # Will remove dot imports if this isn't here
-    "README.md"
+    "README.md",
 ]
 
 # Same as Black.

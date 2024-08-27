@@ -50,12 +50,12 @@ def transformers_cfg(model, tokenizer, grammar_str, prompt):
 
 
 def speculative_grammar_backtracking(model, tokenizer, grammar_str, prompt):
-    from speculative_grammar_backtracking import guide, load_parser
+    import grammar_guide as gg
 
     start = time.time()
-    parser = load_parser(grammar_str)
+    parser = gg.load_parser(grammar_str)
     gen_start = time.time()
-    res = guide(
+    res = gg.guide(
         model,
         tokenizer=tokenizer,
         parser=parser,
@@ -83,10 +83,10 @@ def speculative_grammar_backtracking(model, tokenizer, grammar_str, prompt):
 
 def naive_speculative_grammar_backtracking(model, tokenizer, grammar_str, prompt):
     from transformers import pipeline
-    from speculative_grammar_backtracking import guide, load_parser
+    import grammar_guide as gg
 
     start = time.time()
-    parser = load_parser(grammar_str)
+    parser = gg.load_parser(grammar_str)
     gen_start = time.time()
     pipe = pipeline(
         "text-generation",
@@ -95,7 +95,7 @@ def naive_speculative_grammar_backtracking(model, tokenizer, grammar_str, prompt
         max_new_tokens=200,
         return_full_text=True,
     )
-    res = guide(
+    res = gg.guide(
         lambda x: pipe(x)[0]["generated_text"].lstrip(prompt),
         tokenizer=tokenizer,
         parser=parser,

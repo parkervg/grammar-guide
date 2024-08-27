@@ -1,6 +1,0 @@
-colorama
-exrex
-lark
-pygtrie
-guidance>=0.1.16
-ipython

@@ -20,57 +20,59 @@ if __name__ == "__main__":
     """
     from textwrap import dedent
     from transformers import AutoModelForCausalLM, AutoTokenizer
-    import json
+    import guidance
 
-    from speculative_grammar_backtracking import guide, load_parser
+    from grammar_guide import guide, load_parser
 
     model_name_or_path = "HuggingFaceTB/SmolLM-135M"
     model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
     tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-    parser = load_parser(lark_grammar_filepath="./grammars/json.lark")
+    parser = load_parser(lark_grammar_filepath="examples/benchmarks/json.lark")
 
     # https://docs.nvidia.com/deeplearning/transformer-engine/user-guide/examples/te_llama/tutorial_accelerate_hf_llama_with_te.html
-    # res = guide(
-    #     model,
-    #     tokenizer,
-    #     parser=parser,
-    #     # seed_str="""{"name":""",
-    #     prompt=dedent(
-    #         """
-    #     Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
-    #     """
-    #     ),
-    #     stop_at=["END", "---"],
-    #     draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
-    #     max_grammar_corrections=10,
-    #     max_new_tokens=10,
-    #     temperature=0.3,
+    res = guide(
+        model,
+        tokenizer=tokenizer,
+        parser=parser,
+        # seed_str="""{"name":""",
+        prompt=dedent(
+            """
+        Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
+        """
+        ),
+        seed_str='{"name":',
+        draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+        max_grammar_corrections=10,
+        max_new_tokens=50,
+        temperature=0.3,
+    )
+    print(res.process_time_seconds)
+
+    # from transformers import pipeline
+
+    # pipe = pipeline(
+    #     "text-generation",
+    #     model=model,
+    #     tokenizer=tokenizer,
+    #     device_map="auto",
+    #     max_new_tokens=30,
+    #     return_full_text=False,
     # )
 
-    from transformers import pipeline
+    # prompt = dedent(
+    #     """
+    # Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
+    # """
+    # )
+    # res = guide(
+    #     model=lambda x: pipe(x)[0]["generated_text"].rstrip(prompt),
+    #     parser=parser,
+    #     seed_str="""{"name":""",
+    #     prompt=prompt,
+    #     draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+    # )
 
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        device_map="auto",
-        max_new_tokens=30,
-        return_full_text=False,
-    )
-
-    prompt = dedent(
-        """
-    Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n
-    """
-    )
-    res = guide(
-        model=lambda x: pipe(x)[0]["generated_text"].rstrip(prompt),
-        parser=parser,
-        seed_str="""{"name":""",
-        prompt=prompt,
-    )
-
-    try:
-        print(json.dumps(json.loads(res.response), indent=4))
-    except:
-        print(res.response)
+    # try:
+    #     print(json.dumps(json.loads(res.response), indent=4))
+    # except:
+    #     print(res.response)

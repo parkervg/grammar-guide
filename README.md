@@ -1,7 +1,8 @@
-# Speculative Grammar Backtracking
+# Grammar Guide
+
 
 This repo is an implementation of the decoding mechanism described in Section 3.2 of [Grammar Prompting for Domain-Specific Language
-Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino).
+Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino). I refer to it as speculative grammar backtracking.
 
 It is a form of (rather lenient) constrained decoding, and can be used to guide even proprietary, black-box LLM APIs according to some context-free grammar. 
 
@@ -22,14 +23,14 @@ When using HuggingFace Transformer models, we get an extra speed boost by levera
 from transformers import AutoModelForCausalLM, AutoTokenizer
 import guidance 
 
-from speculative_grammar_backtracking import guide, load_parser
+import grammar_guide as gg
 
 model_name_or_path = "HuggingFaceTB/SmolLM-135M"
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-parser = load_parser(lark_grammar_filepath="../grammars/json.lark")
+parser = gg.load_parser(lark_grammar_filepath="../grammars/json.lark")
 
-res = guide(
+res = gg.guide(
   model,
   tokenizer=tokenizer,
   parser=parser,
@@ -51,9 +52,10 @@ import os
 from openai import OpenAI
 import guidance 
 
-from speculative_grammar_backtracking import guide, load_parser
+import grammar_guide as gg
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
+parser = gg.load_parser(lark_grammar_filepath="../grammars/json.lark")
 
 # Define our core completion predict function
 # This just needs to follow the `fn(s: str) -> str` contract
@@ -70,9 +72,9 @@ def openai_generate(s: str) -> str:
     )
     return chat_completion.choices[0].message.content
 
-res = guide(
+res = gg.guide(
     model=openai_generate,
-    parser=load_parser('./grammars/sql.lark'),
+    parser=parser,
     prompt="Here's a long, complex SQL query: ",
     draft_model=guidance.models.Transformers(
         "HuggingFaceTB/SmolLM-135M", echo=False
