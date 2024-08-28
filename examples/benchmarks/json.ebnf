@@ -5,9 +5,7 @@
 
 root   ::= object
 
-object ::= "{" ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "," ws string ":" ws value "}"
-
-value  ::= string
+object ::= "{" ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "}"
 
 string ::= "\"" [ \t!#-\[\]-~]+ "\"" ws
 
