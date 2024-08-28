@@ -148,7 +148,7 @@ def run_syncode(model, tokenizer, grammar_str, prompt):
         grammar=grammar_str,
         parse_output_only=True,
         mode="grammar_strict",
-        device="cpu",
+        device="cuda" if torch.cuda.is_available() else "cpu",
     )
     gen_start = time.time()
     output = syn_llm.infer(prompt)[0]
@@ -207,7 +207,7 @@ if __name__ == "__main__":
         "Syncode": partial(run_syncode, model, tokenizer, lark_grammar_str, prompt),
     }
     output = []
-    num_iters = 5
+    num_iters = 1
     for name, f in name_to_f.items():
         time_elapsed, gen_time_elapsed, tokens_per_second = 0, 0, 0
         for _ in range(num_iters):
