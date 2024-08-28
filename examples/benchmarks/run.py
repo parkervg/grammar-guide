@@ -10,7 +10,7 @@ import sys
 import pandas as pd
 import importlib.util
 
-GRAMMAR_GUIDE_MAX_NEW_TOKENS = 200
+GRAMMAR_GUIDE_MAX_NEW_TOKENS = 100
 STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
@@ -107,14 +107,15 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
         model_inputs = tokenizer(text, return_tensors="pt").to(model.device)
         model_output = model.generate(
             **model_inputs,
-            max_new_tokens=200,
+            max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
             stop_strings=STOP_STRING_LIST,
             tokenizer=tokenizer,
+            do_sample=False,
         )
-        return tokenizer.decode(model_output[0], skip_special_tokens=True)
+        return tokenizer.decode(model_output[:, model_inputs['input_ids'].shape[-1]:][0], skip_special_tokens=True)
 
     res = gg.guide(
-        lambda x: generate(x).lstrip(prompt),
+        lambda x: generate(x),
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
@@ -169,7 +170,7 @@ def run_syncode(model, tokenizer, grammar_str, prompt):
 
 
 if __name__ == "__main__":
-    model_name_or_path = "HuggingFaceTB/SmolLM-135M"
+    model_name_or_path = "HuggingFaceTB/SmolLM-1.7B"
     model, tokenizer = load_model(model_name_or_path)
 
     from transformers import pipeline
@@ -191,15 +192,15 @@ if __name__ == "__main__":
     )
     # Run benchmarks
     name_to_f = {
-        "Grammar Guide": partial(
-            run_grammar_guide,
+        "Naive Grammar Guide": partial(
+            run_naive_grammar_guide,
             model,
             tokenizer,
             lark_grammar_str,
             prompt,
         ),
-        "Naive Grammar Guide": partial(
-            run_naive_grammar_guide,
+        "Grammar Guide": partial(
+            run_grammar_guide,
             model,
             tokenizer,
             lark_grammar_str,
