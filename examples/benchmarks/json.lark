@@ -1,6 +1,6 @@
 ?start: object
 
-object : "{" [pair ("," pair)~10] "}"
+object : "{" [pair ("," pair)~9] "}"
 pair   : string ":" string
 
 inner: /([^"]|\\\")+/ |
