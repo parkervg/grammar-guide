@@ -11,6 +11,7 @@ import pandas as pd
 import importlib.util
 
 GRAMMAR_GUIDE_MAX_NEW_TOKENS = 200
+STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
 
@@ -75,7 +76,7 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt):
         parser=parser,
         prompt=prompt,
         draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
-        stop_at=["```", "}"],
+        stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
         verbose=False,
         max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
@@ -96,28 +97,31 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt):
 
 
 def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
-    from transformers import pipeline
     import grammar_guide as gg
 
     start = time.time()
     parser = gg.load_parser(grammar_str)
     gen_start = time.time()
-    pipe = pipeline(
-        "text-generation",
-        model=model,
-        tokenizer=tokenizer,
-        max_new_tokens=20,
-        return_full_text=True,
-    )
+
+    def generate(text: str):
+        model_inputs = tokenizer(text, return_tensors="pt").to(model.device)
+        model_output = model.generate(
+            **model_inputs,
+            max_new_tokens=200,
+            stop_strings=STOP_STRING_LIST,
+            tokenizer=tokenizer,
+        )
+        return tokenizer.decode(model_output[0], skip_special_tokens=True)
+
     res = gg.guide(
-        lambda x: pipe(x)[0]["generated_text"].lstrip(prompt),
+        lambda x: generate(x).lstrip(prompt),
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
         draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
-        stop_at=["```", "}"],
+        stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        verbose=False,
+        verbose=True,
         max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
         temperature=0.0,
     )
@@ -207,7 +211,7 @@ if __name__ == "__main__":
         "Syncode": partial(run_syncode, model, tokenizer, lark_grammar_str, prompt),
     }
     output = []
-    num_iters = 1
+    num_iters = 5
     for name, f in name_to_f.items():
         time_elapsed, gen_time_elapsed, tokens_per_second = 0, 0, 0
         for _ in range(num_iters):
