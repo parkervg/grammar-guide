@@ -14,11 +14,17 @@ import pygtrie
 from ..typedefs import StringType
 from ..utils import is_interactive
 
-torch.manual_seed(42)
-
 GREEN_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 165, 0, 0.25);'>"
 BLUE_BG_COLOR_OPEN = "<span style='background-color: rgba(0, 0, 165, 0.25);'>"
 SPAN_CLOSE = "</span>"
+
+
+def set_seed(seed):
+    import numpy as np
+
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
 
 
 class TransformersStringBuilder:
@@ -256,6 +262,7 @@ def forward_pass_no_sample(
     ).past_key_values
 
 
+# @profile
 @torch.inference_mode
 def _gen_loop(
     model: AutoModelForCausalLM,

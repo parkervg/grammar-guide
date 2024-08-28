@@ -15,17 +15,9 @@ from .utils import is_interactive, prepare_initial_prefix, handle_program_predic
 from ._logger import logger
 
 
-def load_parser(
-    lark_grammar_str: Optional[str] = None, lark_grammar_filepath: Optional[str] = None
-) -> EarleyParser:
-    if all([x is None for x in {lark_grammar_str, lark_grammar_filepath}]):
-        raise ValueError(
-            "One of `cfg_grammar_str`, `cfg_grammar_filepath` must be specified!"
-        )
+def load_parser(lark_grammar_str: Optional[str]) -> EarleyParser:
     return EarleyParser(
-        grammar=open(lark_grammar_filepath).read()
-        if lark_grammar_filepath
-        else lark_grammar_str,
+        grammar=lark_grammar_str,
         start="start",
         keep_all_tokens=True,
     )
@@ -81,6 +73,7 @@ def guide(
     )
 
 
+# @profile
 def _transformers_guide(
     model: AutoModelForCausalLM,
     tokenizer: AutoTokenizer,
@@ -99,7 +92,9 @@ def _transformers_guide(
     debug: bool,
 ):
     start = time.time()
-    guide_model = m.Model(model=model, tokenizer=tokenizer)
+    guide_model = None
+    if token_healing:
+        guide_model = m.Model(model=model, tokenizer=tokenizer)
     # https://huggingface.co/docs/transformers/llm_tutorial#wrong-padding-side
     if tokenizer.pad_token is None:
         tokenizer.pad_token = tokenizer.eos_token
@@ -113,8 +108,8 @@ def _transformers_guide(
         # stop_at_prefix_ids = sum([guide_model.prefix_matches(s) for s in stop_at], [])
         stop_at_ids = stop_at_tokenizer_out["input_ids"]
     prompt_input_ids = (
-        tokenizer(prompt, return_tensors="pt", padding=True)
-        .to(model.device)["input_ids"]
+        tokenizer(prompt, return_tensors="pt", padding=True)["input_ids"]
+        .to(model.device)
         .squeeze(0)
     )
     prompt_ids_length = prompt_input_ids.shape[0]
@@ -146,8 +141,9 @@ def _transformers_guide(
         ] = prefix_ids
         start_pos += len(prefix_ids)
         string_builder.extend(prefix_ids, StringType.PROMPT)
-        m.assert_valid_string_state(string_builder, tokens)
-        m.assert_valid_token_state(tokens, tokenizer, start_pos)
+        if debug:
+            m.assert_valid_string_state(string_builder, tokens)
+            m.assert_valid_token_state(tokens, tokenizer, start_pos)
 
     # Don't pass the last token of prompt here - we'll use it for generation
     past_key_values = m.forward_pass_no_sample(
@@ -177,6 +173,7 @@ def _transformers_guide(
                 if debug:
                     m.assert_valid_token_state(tokens, tokenizer, start_pos)
                 processors.append(healer)
+
         tokens, start_pos, past_key_values, string_builder = m._gen_loop(
             model=model,
             tokenizer=tokenizer,
@@ -194,7 +191,8 @@ def _transformers_guide(
         if debug:
             m.assert_valid_string_state(string_builder, tokens)
             m.assert_valid_token_state(tokens, tokenizer, start_pos)
-        generated_token_ids = tokens[prompt_ids_length:]
+
+        generated_token_ids = tokens[prompt_ids_length:start_pos]
         program_prediction: str = tokenizer.decode(
             generated_token_ids, skip_special_tokens=True
         )
@@ -243,24 +241,23 @@ def _transformers_guide(
             # Align the token id breakpoint with the stop position in the prefix
             # prefix = ' {\n "name": "Joseph Smith, 3"\n '
             # program_prediction =' {\n "name": "Joseph Smith, 3"\n "age": 32\n "occupation'
-            prefix_ids = (
-                tokenizer(prefix, return_tensors="pt", add_special_tokens=False)
-                .to(model.device)["input_ids"]
-                .squeeze(0)
-            )
-            predicted_ids = tokens[prompt_ids_length:start_pos]
-            # TODO: the alignnment below breaks with token healing, since it changes
-            #   the tokens in our runnng `tokens` array
-            for p in range(max([predicted_ids.shape[-1], prefix_ids.shape[-1]])):
-                if p >= prefix_ids.shape[-1] or p >= predicted_ids.shape[-1]:
+            stripped_pred = program_prediction
+            stripped_prefix = prefix
+            for p in range(generated_token_ids.shape[-1] - 1, -1, -1):
+                rstrip_s = tokenizer.decode(generated_token_ids[p])
+                stripped_pred = stripped_pred.rstrip(rstrip_s)
+                if len(prefix) > len(stripped_pred):
+                    while not prefix.endswith(rstrip_s):
+                        rstrip_s = rstrip_s[:-1]
+                    stripped_prefix = stripped_prefix.rstrip(rstrip_s)
+                    assert stripped_pred == stripped_prefix
                     break
-                prefix_id = prefix_ids[p]
-                predicted_id = predicted_ids[p]
-                if prefix_id != predicted_id:
+                if stripped_pred == stripped_prefix:
                     break
-            assert tokenizer.decode(prefix_ids[:p]) == tokenizer.decode(
-                predicted_ids[:p]
-            )
+            # Get the remaining bits of our prefix that didn't align well
+            #   with the token representation we had thus far
+            diff_str = prefix.removeprefix(stripped_prefix)
+            assert prefix == tokenizer.decode(generated_token_ids[:p]) + diff_str
             # Cut off our kv cache up to the valid grammar prefix
             past_key_values = m.prune_kv_cache(
                 past_key_values=past_key_values,
@@ -268,21 +265,29 @@ def _transformers_guide(
             )
             # Clear tokens after valid_completion_id index
             tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
-            for i in range(predicted_ids.shape[-1] - p):
+            for i in range(generated_token_ids.shape[-1] - p):
                 string_builder.pop(i)
             if debug:
                 m.assert_valid_string_state(string_builder, tokens)
-            diff = len(prefix_ids) - p
-            if diff > 0:
+            diff_l = 0
+            if diff_str:
+                diff_token_ids = (
+                    tokenizer(diff_str, return_tensors="pt", add_special_tokens=False)[
+                        "input_ids"
+                    ]
+                    .to(model.device)
+                    .squeeze(0)
+                )
+                diff_l = diff_token_ids.shape[-1]
                 tokens[
-                    prompt_ids_length + p : prompt_ids_length + p + diff
-                ] = prefix_ids[-diff:]
+                    prompt_ids_length + p : prompt_ids_length + p + diff_l
+                ] = diff_token_ids
                 past_key_values = m.forward_pass_no_sample(
                     model=model,
-                    input_ids=prefix_ids[-diff:].reshape(1, -1),
+                    input_ids=diff_token_ids.reshape(1, -1),
                     past_key_values=past_key_values,
                 )
-                string_builder.extend(prefix_ids[-diff:], StringType.GENERATION)
+                string_builder.extend(diff_token_ids, StringType.GENERATION)
                 if debug:
                     m.assert_valid_string_state(string_builder, tokens)
             if (
@@ -296,9 +301,9 @@ def _transformers_guide(
             tokens[
                 prompt_ids_length
                 + p
-                + diff : prompt_ids_length
+                + diff_l : prompt_ids_length
                 + p
-                + diff
+                + diff_l
                 + selected_candidate_ids.shape[-1]
             ] = selected_candidate_ids
             # Forward pass new candidate tokens - only if length > 1
@@ -308,7 +313,9 @@ def _transformers_guide(
                     input_ids=selected_candidate_ids[:, :-1],
                     past_key_values=past_key_values,
                 )
-            start_pos = prompt_ids_length + p + diff + selected_candidate_ids.shape[-1]
+            start_pos = (
+                prompt_ids_length + p + diff_l + selected_candidate_ids.shape[-1]
+            )
             string_builder.extend(
                 selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
             )
