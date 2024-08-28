@@ -245,7 +245,7 @@ def _transformers_guide(
             stripped_prefix = prefix
             for p in range(generated_token_ids.shape[-1] - 1, -1, -1):
                 rstrip_s = tokenizer.decode(generated_token_ids[p])
-                stripped_pred = stripped_pred.rstrip(rstrip_s)
+                stripped_pred = stripped_pred.removesuffix(rstrip_s)
                 if len(prefix) > len(stripped_pred):
                     while not prefix.endswith(rstrip_s):
                         rstrip_s = rstrip_s[:-1]
