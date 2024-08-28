@@ -179,7 +179,7 @@ if __name__ == "__main__":
         model=model,
         tokenizer=tokenizer,
         max_new_tokens=20,
-        return_full_text=True,
+        return_full_text=False,
     )
     pipe("hello")
     lark_grammar_str = open(PARENT_DIR / "json.lark").read()
