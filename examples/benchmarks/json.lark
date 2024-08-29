@@ -1,6 +1,6 @@
 ?start: object
 
-object : "{" [pair ("," pair)~9] "}"
+object : "{" [pair ("," pair)~$NUM_REPEATS] "}"
 pair   : string ":" string
 
 inner: /([^"]|\\\")+/ |

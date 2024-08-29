@@ -9,8 +9,14 @@ import subprocess
 import sys
 import pandas as pd
 import importlib.util
+from string import Template
+import seaborn as sns
+import matplotlib.pyplot as plt
+import grammar_guide as gg
 
-GRAMMAR_GUIDE_MAX_NEW_TOKENS = 100
+gg.modeling_utils.set_seed(42)
+
+GRAMMAR_GUIDE_MAX_NEW_TOKENS = 30
 STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
@@ -64,7 +70,7 @@ def run_transformers_cfg(model, tokenizer, grammar_str, prompt):
     )
 
 
-def run_grammar_guide(model, tokenizer, grammar_str, prompt):
+def run_grammar_guide(model, tokenizer, grammar_str, prompt, token_healing):
     import grammar_guide as gg
 
     start = time.time()
@@ -81,8 +87,12 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt):
         verbose=False,
         max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
         temperature=0.0,
+        token_healing=token_healing,
+        debug=False,
     )
-    print(f"SGB OUTPUT (with {res.num_grammar_corrections} corrections)")
+    print(
+        f"SGB OUTPUT (with {res.num_grammar_corrections} corrections, token_healing={token_healing})"
+    )
     print(res.response)
     elapsed_time_seconds = time.time() - start
     elapsed_gen_time_seconds = time.time() - gen_start
@@ -112,7 +122,10 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
             tokenizer=tokenizer,
             do_sample=False,
         )
-        return tokenizer.decode(model_output[:, model_inputs['input_ids'].shape[-1]:][0], skip_special_tokens=True)
+        return tokenizer.decode(
+            model_output[:, model_inputs["input_ids"].shape[-1] :][0],
+            skip_special_tokens=True,
+        )
 
     res = gg.guide(
         lambda x: generate(x),
@@ -122,9 +135,11 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
         draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        verbose=True,
+        verbose=False,
         max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
         temperature=0.0,
+        token_healing=False,
+        debug=False,
     )
     print(f"NAIVE SGB OUTPUT (with {res.num_grammar_corrections} corrections)")
     print(res.response)
@@ -170,7 +185,7 @@ def run_syncode(model, tokenizer, grammar_str, prompt):
 
 
 if __name__ == "__main__":
-    model_name_or_path = "HuggingFaceTB/SmolLM-1.7B"
+    model_name_or_path = "HuggingFaceTB/SmolLM-135M"
     model, tokenizer = load_model(model_name_or_path)
 
     from transformers import pipeline
@@ -183,49 +198,84 @@ if __name__ == "__main__":
         return_full_text=False,
     )
     pipe("hello")
-    lark_grammar_str = open(PARENT_DIR / "json.lark").read()
-    ebnf_grammar_str = open(PARENT_DIR / "json.ebnf").read()
-    prompt = dedent(
-        """
-    Here is a really long JSON object, with 10 keys, using only string values:\n\n```json\n
-    """
-    )
-    # Run benchmarks
-    name_to_f = {
-        "Naive Grammar Guide": partial(
-            run_naive_grammar_guide,
-            model,
-            tokenizer,
-            lark_grammar_str,
-            prompt,
-        ),
-        "Grammar Guide": partial(
-            run_grammar_guide,
-            model,
-            tokenizer,
-            lark_grammar_str,
-            prompt,
-        ),
-        "Transformers CFG": partial(
-            run_transformers_cfg, model, tokenizer, ebnf_grammar_str, prompt
-        ),
-        "Syncode": partial(run_syncode, model, tokenizer, lark_grammar_str, prompt),
-    }
+
+    lark_grammar_str = Template(open(PARENT_DIR / "json.lark").read())
+    ebnf_grammar_str = Template(open(PARENT_DIR / "json.ebnf").read())
+
+    num_iters_per_trial = 3
+    json_key_trials = [10, 20, 30, 40]
     output = []
-    num_iters = 5
-    for name, f in name_to_f.items():
-        time_elapsed, gen_time_elapsed, tokens_per_second = 0, 0, 0
-        for _ in range(num_iters):
-            _time_elapsed, _gen_time_elapsed, _tokens_per_second = f()
-            time_elapsed += _time_elapsed
-            gen_time_elapsed += _gen_time_elapsed
-            tokens_per_second += _tokens_per_second
-        output.append(
-            {
-                "Name": name,
-                "Time Elapsed": time_elapsed / num_iters,
-                "Generation Time": gen_time_elapsed / num_iters,
-                "Tokens Per Second": tokens_per_second / num_iters,
-            }
+    for num_json_keys in json_key_trials:
+        print(rf"Running eval with {num_json_keys} JSON keys...")
+        prompt = dedent(
+            f"""
+        This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
+        Anyways, now I will get to my real point.
+        Here is a really long JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
+        """
         )
-    print(pd.DataFrame(output).to_markdown(index=False))
+        curr_ebnf_grammar_str = ebnf_grammar_str.safe_substitute(
+            REPEATED_STRING_VALUES=' "," ws string ":" ws string ' * (num_json_keys - 1)
+        )
+        curr_lark_grammar_str = lark_grammar_str.safe_substitute(
+            NUM_REPEATS=f"{num_json_keys-1}"
+        )
+        # Define benchmarks
+        name_to_f = {
+            "Naive Grammar Guide": partial(
+                run_naive_grammar_guide,
+                model,
+                tokenizer,
+                curr_lark_grammar_str,
+                prompt,
+            ),
+            "Grammar Guide": partial(
+                run_grammar_guide,
+                model,
+                tokenizer,
+                curr_lark_grammar_str,
+                prompt,
+                token_healing=False,
+            ),
+            "Grammar Guide (with token healing)": partial(
+                run_grammar_guide,
+                model,
+                tokenizer,
+                curr_lark_grammar_str,
+                prompt,
+                token_healing=True,
+            ),
+            "Transformers CFG": partial(
+                run_transformers_cfg, model, tokenizer, curr_ebnf_grammar_str, prompt
+            ),
+            "Syncode": partial(
+                run_syncode, model, tokenizer, curr_lark_grammar_str, prompt
+            ),
+        }
+        for name, f in name_to_f.items():
+            for _ in range(num_iters_per_trial):
+                time_elapsed, gen_time_elapsed, tokens_per_second = f()
+                output.append(
+                    {
+                        "Name": name,
+                        "Time Elapsed": time_elapsed,
+                        "Generation Time": gen_time_elapsed,
+                        "Tokens Per Second": tokens_per_second,
+                        "# JSON Keys": num_json_keys,
+                    }
+                )
+    df = pd.DataFrame(output)
+    sns.set_style("whitegrid")
+    fig, ax = plt.subplots(figsize=(10, 5))
+    ax = sns.lineplot(data=df, x="# JSON Keys", y="Time Elapsed (s)", hue="Name")
+    ax.set_xticks(json_key_trials, labels=json_key_trials)
+    plt.title(
+        f"Time to Generate JSON Using {model_name_or_path}, Averaged Across {num_iters_per_trial} Trials"
+    )
+    plt.savefig(
+        PARENT_DIR / "runtime_lineplot.png",
+        dpi=200,
+        bbox_inches="tight",
+        pad_inches=0.2,
+        facecolor="w",
+    )
