@@ -4,7 +4,6 @@ import torch
 import guidance
 from textwrap import dedent
 
-GRAMMAR_GUIDE_MAX_NEW_TOKENS = 20
 STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
@@ -23,19 +22,25 @@ if __name__ == "__main__":
     """
     reversed-string-alignment: 4.99
     main: 5.61 (6.65 when constructing guide_model var)
+
+    Example of token healing:
+        - tokens end in [216, 18] or ' ' + '"'
+        - model chooses [476] or ' "'
+
     """
     from string import Template
     import grammar_guide as gg
+    from transformers import set_seed
 
-    gg.modeling_utils.set_seed(42)
+    set_seed(42)
 
-    num_json_keys = 5
+    num_json_keys = 10
 
     prompt = dedent(
         f"""
             This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
             Anyways, now I will get to my real point.
-            Here is a really long JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
+            Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
             """
     )
     lark_grammar_str = Template(
@@ -45,22 +50,27 @@ if __name__ == "__main__":
         NUM_REPEATS=f"{num_json_keys - 1}"
     )
 
-    model_name_or_path = "HuggingFaceTB/SmolLM-135M"
+    model_name_or_path = "HuggingFaceTB/SmolLM-360M"
     model, tokenizer = load_model(model_name_or_path=model_name_or_path)
     res = gg.guide(
         model,
+        # seed_str=" {",
         tokenizer=tokenizer,
         parser=gg.load_parser(lark_grammar_str),
         prompt=prompt,
         draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
-        max_grammar_corrections=20,
+        max_grammar_corrections=10,
+        max_new_tokens=30,
+        temperature=0.3,
+        token_healing=True,
         verbose=True,
-        max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
-        temperature=0.0,
-        token_healing=False,
-        debug=False,
+        debug=True,
     )
+    import json
+
+    with open("main.json", "w") as f:
+        json.dump(res.to_list(), f, indent=4)
     print(res.num_grammar_corrections)
     print(res.process_time_seconds)
     print(res.response)

@@ -16,7 +16,7 @@ import grammar_guide as gg
 
 gg.modeling_utils.set_seed(42)
 
-GRAMMAR_GUIDE_MAX_NEW_TOKENS = 30
+GRAMMAR_GUIDE_MAX_NEW_TOKENS = 50
 STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
@@ -53,7 +53,7 @@ def run_transformers_cfg(model, tokenizer, grammar_str, prompt):
     ).to(model.device)["input_ids"]
     output = model.generate(
         input_ids,
-        max_new_tokens=200,
+        max_new_tokens=2000,
         logits_processor=[grammar_processor],
         repetition_penalty=1.1,
         num_return_sequences=1,
@@ -70,7 +70,15 @@ def run_transformers_cfg(model, tokenizer, grammar_str, prompt):
     )
 
 
-def run_grammar_guide(model, tokenizer, grammar_str, prompt, token_healing):
+def run_grammar_guide(
+    model,
+    tokenizer,
+    grammar_str,
+    prompt,
+    max_new_tokens,
+    token_healing,
+    draft_model_name_or_path,
+):
     import grammar_guide as gg
 
     start = time.time()
@@ -81,12 +89,12 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt, token_healing):
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
-        draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+        draft_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        verbose=False,
-        max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
+        max_new_tokens=max_new_tokens,
         temperature=0.0,
+        verbose=False,
         token_healing=token_healing,
         debug=False,
     )
@@ -97,6 +105,7 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt, token_healing):
     elapsed_time_seconds = time.time() - start
     elapsed_gen_time_seconds = time.time() - gen_start
     return (
+        res,
         elapsed_time_seconds,
         elapsed_gen_time_seconds,
         len(
@@ -106,7 +115,9 @@ def run_grammar_guide(model, tokenizer, grammar_str, prompt, token_healing):
     )
 
 
-def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
+def run_naive_grammar_guide(
+    model, tokenizer, grammar_str, max_new_tokens, prompt, draft_model_name_or_path
+):
     import grammar_guide as gg
 
     start = time.time()
@@ -117,7 +128,7 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
         model_inputs = tokenizer(text, return_tensors="pt").to(model.device)
         model_output = model.generate(
             **model_inputs,
-            max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
+            max_new_tokens=max_new_tokens,
             stop_strings=STOP_STRING_LIST,
             tokenizer=tokenizer,
             do_sample=False,
@@ -132,12 +143,12 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
-        draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+        draft_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        verbose=False,
         max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
         temperature=0.0,
+        verbose=False,
         token_healing=False,
         debug=False,
     )
@@ -146,6 +157,7 @@ def run_naive_grammar_guide(model, tokenizer, grammar_str, prompt):
     elapsed_time_seconds = time.time() - start
     elapsed_gen_time_seconds = time.time() - gen_start
     return (
+        res,
         elapsed_time_seconds,
         elapsed_gen_time_seconds,
         len(
@@ -211,7 +223,7 @@ if __name__ == "__main__":
             f"""
         This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
         Anyways, now I will get to my real point.
-        Here is a really long JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
+        Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
         """
         )
         curr_ebnf_grammar_str = ebnf_grammar_str.safe_substitute(
@@ -258,13 +270,14 @@ if __name__ == "__main__":
                 output.append(
                     {
                         "Name": name,
-                        "Time Elapsed": time_elapsed,
+                        "Time Elapsed (s)": time_elapsed,
                         "Generation Time": gen_time_elapsed,
                         "Tokens Per Second": tokens_per_second,
                         "# JSON Keys": num_json_keys,
                     }
                 )
     df = pd.DataFrame(output)
+    df.to_csv(PARENT_DIR / "json_benchmark.csv", index=False)
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
     ax = sns.lineplot(data=df, x="# JSON Keys", y="Time Elapsed (s)", hue="Name")

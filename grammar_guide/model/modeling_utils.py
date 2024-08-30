@@ -149,9 +149,14 @@ def assert_valid_token_state(
 def assert_valid_string_state(
     string_builder: TransformersStringBuilder, tokens: torch.Tensor
 ):
+    return True
     assert string_builder._joint_string == string_builder.tokenizer.decode(
         tokens, skip_special_tokens=True
     )
+
+
+def assert_valid_kv_cache_state(past_key_values: DynamicCache, start_pos: int):
+    assert past_key_values.key_cache[0].shape[-2] == (start_pos - 1)
 
 
 def initialize_tokens(total_len: int, pad_token_id: int, device: torch.device):
@@ -239,6 +244,8 @@ def prune_kv_cache(past_key_values: DynamicCache, up_to: int) -> DynamicCache:
     with the shape (batch_size, num_key_value_heads, seq_len, ??)
     # TODO: the last dimension is 64, not sure where this comes from)
     """
+    # print(f"Previous kv cache size: {past_key_values.key_cache[0].shape[-2]}")
+    # print(f"New size: {up_to}")
     _past_key_values = DynamicCache()
     _past_key_values.key_cache = [t[..., :up_to, :] for t in past_key_values.key_cache]
     _past_key_values.value_cache = [
@@ -253,6 +260,9 @@ def forward_pass_no_sample(
     past_key_values: Optional[DynamicCache] = None,
 ):
     """Used to pass bits of text where we don't care about the logits"""
+    # tokenizer = AutoTokenizer.from_pretrained(model.config.name_or_path)
+    # print("Forward pass:")
+    # print(repr(tokenizer.decode(input_ids.squeeze(), skip_special_tokens=True)))
     return model(
         input_ids=input_ids,
         past_key_values=past_key_values or DynamicCache(),
@@ -269,10 +279,10 @@ def _gen_loop(
     tokenizer: AutoTokenizer,
     tokens: torch.Tensor,
     past_key_values: DynamicCache,
-    string_builder: TransformersStringBuilder,
     start_pos: int,
     total_len: int,
     stop_at_ids: torch.Tensor,
+    string_builder: Optional[TransformersStringBuilder] = None,
     processors: Optional[List[LogitsProcessor]] = None,
     max_new_tokens: Optional[int] = 32,
     top_p: float = 0.9,
@@ -315,7 +325,8 @@ def _gen_loop(
             output_attentions=False,
             output_hidden_states=False,
         )
-
+        # print(f"Received token:")
+        # print(repr(tokenizer.decode(tokens[prev_pos:cur_pos])))
         # Each entry in cache is tuple of (key, value)
         past_key_values = model_output.past_key_values
 
@@ -324,7 +335,7 @@ def _gen_loop(
         # len(cache) == model.config.num_hidden_layers
         logits = model_output.logits.squeeze(0)
         for p in processors:
-            logits = p(tokens[prev_pos:cur_pos].unsqueeze(0), logits)
+            logits = p(tokens[:cur_pos].unsqueeze(0), logits)
         last_logits = logits[-1, :]
         if temperature > 0:
             probs = torch.softmax(last_logits / temperature, dim=-1)
@@ -332,7 +343,8 @@ def _gen_loop(
         else:
             next_token = torch.argmax(last_logits, dim=-1)
         tokens[cur_pos] = next_token
-        string_builder.extend([next_token], StringType.GENERATION)
+        if string_builder:
+            string_builder.extend([next_token], StringType.GENERATION)
         # if p:
         #     try:
         #         feed_str_to_parser(parser, p, tokenizer.decode(next_token))

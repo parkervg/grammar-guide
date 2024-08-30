@@ -114,12 +114,15 @@ def _transformers_guide(
     )
     prompt_ids_length = prompt_input_ids.shape[0]
     total_len = model.config.max_position_embeddings
-    string_builder = m.TransformersStringBuilder(
-        tokenizer,
-        starting_ids=prompt_input_ids,
-        log_changes=verbose,
-        write_to_html=save_html,
-    )
+    log_to_string_builder: bool = save_html or verbose or debug
+    string_builder = None
+    if log_to_string_builder:
+        string_builder = m.TransformersStringBuilder(
+            tokenizer,
+            starting_ids=prompt_input_ids,
+            log_changes=verbose,
+            write_to_html=save_html,
+        )
     tokens = m.initialize_tokens(total_len, tokenizer.pad_token_id, model.device)
     tokens[: len(prompt_input_ids)] = prompt_input_ids
     draft_model = draft_model + prompt
@@ -127,7 +130,12 @@ def _transformers_guide(
 
     corrections = []
     num_correction_left = max_grammar_corrections
-    ret_prediction, initial_prediction, selected_candidate = None, None, None
+    ret_prediction, initial_prediction, selected_candidate, program_prediction = (
+        None,
+        None,
+        None,
+        None,
+    )
     prefix: str = prepare_initial_prefix(parser=parser, seed_str=seed_str)
 
     if prefix:
@@ -140,38 +148,49 @@ def _transformers_guide(
             len(prompt_input_ids) : len(prompt_input_ids) + len(prefix_ids)
         ] = prefix_ids
         start_pos += len(prefix_ids)
-        string_builder.extend(prefix_ids, StringType.PROMPT)
+        if log_to_string_builder:
+            string_builder.extend(prefix_ids, StringType.PROMPT)
         if debug:
             m.assert_valid_string_state(string_builder, tokens)
             m.assert_valid_token_state(tokens, tokenizer, start_pos)
-
     # Don't pass the last token of prompt here - we'll use it for generation
     past_key_values = m.forward_pass_no_sample(
         model=model,
         input_ids=tokens[: start_pos - 1].unsqueeze(0),
     )
     while num_correction_left > 0 and ret_prediction is None:
+        _max_new_tokens = max_new_tokens
         processors = []
         if token_healing:
             healer = TokenHealingLogitsProcessor(
                 guide_model,
                 guide_model.model.config.vocab_size,
-                tokens[tokens != tokenizer.pad_token_id],
+                # IMPORTANT: if we don't clone below, then
+                #   modifying the tokens array will result in
+                #   manipulation of the healed_token_ids attribute
+                tokens[:start_pos].clone().detach(),
             )
             healed_token_ids = healer.healed_token_ids
+            # TODO: why do things break when len(healed_token_ids) > 1?
             if len(healed_token_ids) > 0:
-                # Reset back, depending on length of healed tokens
-                tokens[start_pos - len(healed_token_ids) :] = tokenizer.pad_token_id
+                _max_new_tokens = max_new_tokens + len(healed_token_ids)
                 start_pos -= len(healed_token_ids)
+                # Reset back, depending on length of healed tokens
+                tokens[start_pos:] = tokenizer.pad_token_id
+                # print("Healed tokens:")
+                # print(repr(tokenizer.decode(healed_token_ids)))
                 past_key_values = m.prune_kv_cache(
                     past_key_values=past_key_values,
-                    up_to=start_pos - len(healed_token_ids),
+                    up_to=start_pos - 1,
                 )
-                for i in range(len(healed_token_ids)):
-                    string_builder.pop(i, token_healing=True)
-                string_builder.contiguous_pops = 0
+                # print("Backed cache up to:")
+                # print(repr(tokenizer.decode(tokens[:past_key_values.key_cache[0].shape[-2]])))
+                if log_to_string_builder:
+                    for i in range(len(healed_token_ids)):
+                        string_builder.pop(i, token_healing=True)
                 if debug:
                     m.assert_valid_token_state(tokens, tokenizer, start_pos)
+                    m.assert_valid_kv_cache_state(past_key_values, start_pos)
                 processors.append(healer)
 
         tokens, start_pos, past_key_values, string_builder = m._gen_loop(
@@ -184,13 +203,14 @@ def _transformers_guide(
             start_pos=start_pos,
             total_len=total_len,
             stop_at_ids=stop_at_ids,
-            max_new_tokens=max_new_tokens,
+            max_new_tokens=_max_new_tokens,
             top_p=top_p,
             temperature=temperature,
         )
         if debug:
             m.assert_valid_string_state(string_builder, tokens)
             m.assert_valid_token_state(tokens, tokenizer, start_pos)
+            m.assert_valid_kv_cache_state(past_key_values, start_pos)
 
         generated_token_ids = tokens[prompt_ids_length:start_pos]
         program_prediction: str = tokenizer.decode(
@@ -218,6 +238,12 @@ def _transformers_guide(
             logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
             ret_prediction = prefix
             continue
+        # Before we make modifications to tokens array - make sure the last generated token is passed to model
+        past_key_values = m.forward_pass_no_sample(
+            model=model,
+            input_ids=tokens[start_pos - 1].unsqueeze(0).unsqueeze(0),
+            past_key_values=past_key_values,
+        )
         if prefix == program_prediction:
             # Simple case: insert our candidate ids into the end of the running token array
             tokens[
@@ -231,12 +257,14 @@ def _transformers_guide(
                     past_key_values=past_key_values,
                 )
             start_pos += selected_candidate_ids.shape[-1]
-            string_builder.extend(
-                selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
-            )
+            if log_to_string_builder:
+                string_builder.extend(
+                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+                )
             if debug:
                 m.assert_valid_string_state(string_builder, tokens)
                 m.assert_valid_token_state(tokens, tokenizer, start_pos)
+                m.assert_valid_kv_cache_state(past_key_values, start_pos)
         else:
             # Align the token id breakpoint with the stop position in the prefix
             # prefix = ' {\n "name": "Joseph Smith, 3"\n '
@@ -249,7 +277,7 @@ def _transformers_guide(
                 if len(prefix) > len(stripped_pred):
                     while not prefix.endswith(rstrip_s):
                         rstrip_s = rstrip_s[:-1]
-                    stripped_prefix = stripped_prefix.rstrip(rstrip_s)
+                    stripped_prefix = stripped_prefix.removesuffix(rstrip_s)
                     assert stripped_pred == stripped_prefix
                     break
                 if stripped_pred == stripped_prefix:
@@ -263,13 +291,17 @@ def _transformers_guide(
                 past_key_values=past_key_values,
                 up_to=prompt_ids_length + p,
             )
+            start_pos = prompt_ids_length + p
+            # print("Backed cache up to:")
+            # print(repr(tokenizer.decode(tokens[prompt_ids_length:past_key_values.key_cache[0].shape[-2]])))
             # Clear tokens after valid_completion_id index
             tokens[prompt_ids_length + p :] = tokenizer.pad_token_id
-            for i in range(generated_token_ids.shape[-1] - p):
-                string_builder.pop(i)
+            if log_to_string_builder:
+                for i in range(generated_token_ids.shape[-1] - p):
+                    string_builder.pop(i)
             if debug:
                 m.assert_valid_string_state(string_builder, tokens)
-            diff_l = 0
+                # m.assert_valid_kv_cache_state(past_key_values, start_pos)
             if diff_str:
                 diff_token_ids = (
                     tokenizer(diff_str, return_tensors="pt", add_special_tokens=False)[
@@ -287,9 +319,12 @@ def _transformers_guide(
                     input_ids=diff_token_ids.reshape(1, -1),
                     past_key_values=past_key_values,
                 )
-                string_builder.extend(diff_token_ids, StringType.GENERATION)
+                start_pos += diff_l
+                if log_to_string_builder:
+                    string_builder.extend(diff_token_ids, StringType.GENERATION)
                 if debug:
                     m.assert_valid_string_state(string_builder, tokens)
+                    # m.assert_valid_kv_cache_state(past_key_values, start_pos)
             if (
                 selected_candidate_ids.shape[-1]
                 > tokens[prompt_ids_length + p :].shape[0]
@@ -299,12 +334,7 @@ def _transformers_guide(
                 )
             # Update tokens with our selected candidate id
             tokens[
-                prompt_ids_length
-                + p
-                + diff_l : prompt_ids_length
-                + p
-                + diff_l
-                + selected_candidate_ids.shape[-1]
+                start_pos : start_pos + selected_candidate_ids.shape[-1]
             ] = selected_candidate_ids
             # Forward pass new candidate tokens - only if length > 1
             if selected_candidate_ids.shape[-1] > 1:
@@ -313,23 +343,24 @@ def _transformers_guide(
                     input_ids=selected_candidate_ids[:, :-1],
                     past_key_values=past_key_values,
                 )
-            start_pos = (
-                prompt_ids_length + p + diff_l + selected_candidate_ids.shape[-1]
-            )
-            string_builder.extend(
-                selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
-            )
+            start_pos += selected_candidate_ids.shape[-1]
+            if log_to_string_builder:
+                string_builder.extend(
+                    selected_candidate_ids.squeeze(0), StringType.CANDIDATE_SELECTION
+                )
             if debug:
                 m.assert_valid_string_state(string_builder, tokens)
                 m.assert_valid_token_state(tokens, tokenizer, start_pos)
+                m.assert_valid_kv_cache_state(past_key_values, start_pos)
         num_correction_left -= 1
-        logger.debug(
-            Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
-        )
+        # logger.debug(
+        #     Fore.YELLOW + f"Made a {corrections[-1].type} correction..." + Fore.RESET
+        # )
         if tokens[tokens != tokenizer.pad_token_id].count_nonzero() == 0:
             logger.debug(Fore.RED + "Exceeded max token array length" + Fore.RESET)
             ret_prediction = prefix
             continue
+
     if ret_prediction is None:
         logger.debug(
             Fore.RED
