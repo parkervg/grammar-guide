@@ -46,6 +46,6 @@ def test_simple_guide(
         temperature=0.0,
         verbose=False,
         token_healing=False,
-        debug=False,
+        debug=True,
     )
     print(json.dumps(json.loads(res.response), indent=4))
