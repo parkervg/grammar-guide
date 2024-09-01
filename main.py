@@ -26,7 +26,11 @@ if __name__ == "__main__":
     Example of token healing:
         - tokens end in [216, 18] or ' ' + '"'
         - model chooses [476] or ' "'
-
+    TODO:
+        - Look into the 2 healed token situation
+            - Is the generation after the 1st constrained token the same
+                when doing normal (non-token healed) generation?
+        - Look into huggingface token healing: https://github.com/huggingface/transformers/blob/c409cd81777fb27aadc043ed3d8339dbc020fb3b/src/transformers/generation/utils.py#L2217
     """
     from string import Template
     import grammar_guide as gg
@@ -38,10 +42,10 @@ if __name__ == "__main__":
 
     prompt = dedent(
         f"""
-            This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
-            Anyways, now I will get to my real point.
-            Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
-            """
+        This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
+        Anyways, now I will get to my real point.
+        Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
+        """
     )
     lark_grammar_str = Template(
         open(PARENT_DIR / "examples/benchmarks/json.lark").read()
@@ -58,10 +62,10 @@ if __name__ == "__main__":
         tokenizer=tokenizer,
         parser=gg.load_parser(lark_grammar_str),
         prompt=prompt,
-        draft_model=guidance.models.Transformers(model_name_or_path, echo=False),
+        target_model=guidance.models.Transformers(model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=10,
-        max_new_tokens=30,
+        token_lookahead=10,
         temperature=0.3,
         token_healing=True,
         verbose=True,

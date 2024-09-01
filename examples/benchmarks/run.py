@@ -16,7 +16,7 @@ import grammar_guide as gg
 
 gg.modeling_utils.set_seed(42)
 
-GRAMMAR_GUIDE_MAX_NEW_TOKENS = 50
+GRAMMAR_GUIDE_MAX_NEW_TOKENS = 20
 STOP_STRING_LIST = ["```", "}"]
 PARENT_DIR = Path(__file__).parent
 
@@ -89,10 +89,10 @@ def run_grammar_guide(
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
-        draft_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
+        target_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        max_new_tokens=max_new_tokens,
+        token_lookahead=max_new_tokens,
         temperature=0.0,
         verbose=False,
         token_healing=token_healing,
@@ -105,7 +105,6 @@ def run_grammar_guide(
     elapsed_time_seconds = time.time() - start
     elapsed_gen_time_seconds = time.time() - gen_start
     return (
-        res,
         elapsed_time_seconds,
         elapsed_gen_time_seconds,
         len(
@@ -143,10 +142,10 @@ def run_naive_grammar_guide(
         tokenizer=tokenizer,
         parser=parser,
         prompt=prompt,
-        draft_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
+        target_model=guidance.models.Transformers(draft_model_name_or_path, echo=False),
         stop_at=STOP_STRING_LIST,
         max_grammar_corrections=20,
-        max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
+        token_lookahead=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
         temperature=0.0,
         verbose=False,
         token_healing=False,
@@ -157,7 +156,6 @@ def run_naive_grammar_guide(
     elapsed_time_seconds = time.time() - start
     elapsed_gen_time_seconds = time.time() - gen_start
     return (
-        res,
         elapsed_time_seconds,
         elapsed_gen_time_seconds,
         len(
@@ -234,28 +232,24 @@ if __name__ == "__main__":
         )
         # Define benchmarks
         name_to_f = {
-            "Naive Grammar Guide": partial(
+            "Naive Backtracking": partial(
                 run_naive_grammar_guide,
-                model,
-                tokenizer,
-                curr_lark_grammar_str,
-                prompt,
+                model=model,
+                tokenizer=tokenizer,
+                grammar_str=curr_lark_grammar_str,
+                prompt=prompt,
+                max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
+                draft_model_name_or_path=model_name_or_path,
             ),
             "Grammar Guide": partial(
                 run_grammar_guide,
-                model,
-                tokenizer,
-                curr_lark_grammar_str,
-                prompt,
-                token_healing=False,
-            ),
-            "Grammar Guide (with token healing)": partial(
-                run_grammar_guide,
-                model,
-                tokenizer,
-                curr_lark_grammar_str,
-                prompt,
+                model=model,
+                tokenizer=tokenizer,
+                grammar_str=curr_lark_grammar_str,
+                prompt=prompt,
+                max_new_tokens=GRAMMAR_GUIDE_MAX_NEW_TOKENS,
                 token_healing=True,
+                draft_model_name_or_path=model_name_or_path,
             ),
             "Transformers CFG": partial(
                 run_transformers_cfg, model, tokenizer, curr_ebnf_grammar_str, prompt
@@ -280,7 +274,7 @@ if __name__ == "__main__":
     df.to_csv(PARENT_DIR / "json_benchmark.csv", index=False)
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax = sns.lineplot(data=df, x="# JSON Keys", y="Time Elapsed (s)", hue="Name")
+    ax = sns.lineplot(data=df, x="# JSON Keys", y="Tokens Per Second", hue="Name")
     ax.set_xticks(json_key_trials, labels=json_key_trials)
     plt.title(
         f"Time to Generate JSON Using {model_name_or_path}, Averaged Across {num_iters_per_trial} Trials"

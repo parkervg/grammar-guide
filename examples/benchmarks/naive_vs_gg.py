@@ -13,7 +13,6 @@ PARENT_DIR = Path(__file__).parent
 
 if __name__ == "__main__":
     model_name_or_path = "HuggingFaceTB/SmolLM-135M"
-    num_json_keys = 20
     model, tokenizer = load_model(model_name_or_path)
 
     from transformers import pipeline
@@ -27,60 +26,72 @@ if __name__ == "__main__":
     )
     pipe("hello")
 
-    lark_grammar_str = Template(open(PARENT_DIR / "json.lark").read()).safe_substitute(
-        NUM_REPEATS=f"{num_json_keys-1}"
-    )
-    prompt = dedent(
-        f"""
-            This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
-            Anyways, now I will get to my real point.
-            Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
-            """
-    )
-    num_iters_per_trial = 1
-    max_new_token_list = [5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
+    num_json_keys_trials = [10, 20, 30, 40]
+    num_iters_per_trial = 3
+    max_new_token_list = [10, 20, 30, 40]
     output = []
-    for max_new_tokens in max_new_token_list:
-        name_to_f = {
-            "Naive Grammar Guide": partial(
-                run_naive_grammar_guide,
-                model=model,
-                tokenizer=tokenizer,
-                grammar_str=lark_grammar_str,
-                prompt=prompt,
-                max_new_tokens=max_new_tokens,
-                draft_model_name_or_path=model_name_or_path,
-            ),
-            "Grammar Guide (with token healing)": partial(
-                run_grammar_guide,
-                model=model,
-                tokenizer=tokenizer,
-                grammar_str=lark_grammar_str,
-                prompt=prompt,
-                max_new_tokens=max_new_tokens,
-                token_healing=True,
-                draft_model_name_or_path=model_name_or_path,
-            ),
-        }
-        for name, f in name_to_f.items():
-            print(max_new_tokens)
-            for _ in range(num_iters_per_trial):
-                res, time_elapsed, gen_time_elapsed, tokens_per_second = f()
-                output.append(
-                    {
-                        "Name": name,
-                        "Time Elapsed (s)": time_elapsed,
-                        "Generation Time": gen_time_elapsed,
-                        "Tokens Per Second": tokens_per_second,
-                        "Max New Tokens": max_new_tokens,
-                        "Num Corrections": res.num_grammar_corrections,
-                    }
-                )
+    for num_json_keys in num_json_keys_trials:
+        lark_grammar_str = Template(
+            open(PARENT_DIR / "json.lark").read()
+        ).safe_substitute(NUM_REPEATS=f"{num_json_keys-1}")
+        prompt = dedent(
+            f"""
+                This is an introduction to a prompt. It is intended to mimick the lengthy few-shot prompts we tend to use.
+                Anyways, now I will get to my real point.
+                Here is a JSON object, with {num_json_keys} keys, using only string values:\n\n```json\n
+                """
+        )
+        for max_new_tokens in max_new_token_list:
+            name_to_f = {
+                "Naive Backtracking": partial(
+                    run_naive_grammar_guide,
+                    model=model,
+                    tokenizer=tokenizer,
+                    grammar_str=lark_grammar_str,
+                    prompt=prompt,
+                    max_new_tokens=max_new_tokens,
+                    draft_model_name_or_path=model_name_or_path,
+                ),
+                "Grammar Guide (with token healing)": partial(
+                    run_grammar_guide,
+                    model=model,
+                    tokenizer=tokenizer,
+                    grammar_str=lark_grammar_str,
+                    prompt=prompt,
+                    max_new_tokens=max_new_tokens,
+                    token_healing=True,
+                    draft_model_name_or_path=model_name_or_path,
+                ),
+            }
+            for name, f in name_to_f.items():
+                print(max_new_tokens)
+                for _ in range(num_iters_per_trial):
+                    try:
+                        res, time_elapsed, gen_time_elapsed, tokens_per_second = f()
+                        output.append(
+                            {
+                                "Name": name,
+                                "Time Elapsed (s)": time_elapsed,
+                                "Generation Time": gen_time_elapsed,
+                                "Tokens Per Second": tokens_per_second,
+                                "Max New Tokens": max_new_tokens,
+                                "Num Corrections": res.num_grammar_corrections,
+                                "# JSON Keys": num_json_keys,
+                            }
+                        )
+                    except Exception:
+                        continue
     df = pd.DataFrame(output)
     df.to_csv(PARENT_DIR / "naive_vs_gg.csv", index=False)
     sns.set_style("whitegrid")
     fig, ax = plt.subplots(figsize=(10, 5))
-    ax = sns.lineplot(data=df, x="Max New Tokens", y="Tokens Per Second", hue="Name")
+    ax = sns.lineplot(
+        data=df,
+        x="Max New Tokens",
+        y="Tokens Per Second",
+        hue="Name",
+        style="# JSON Keys",
+    )
     ax.set_xticks(max_new_token_list, labels=max_new_token_list)
     plt.title(
         f"Naive Backtracking vs. Optimized Grammar Guide for {num_json_keys} JSON Keys"

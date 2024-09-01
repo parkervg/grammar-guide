@@ -149,7 +149,6 @@ def assert_valid_token_state(
 def assert_valid_string_state(
     string_builder: TransformersStringBuilder, tokens: torch.Tensor
 ):
-    return True
     assert string_builder._joint_string == string_builder.tokenizer.decode(
         tokens, skip_special_tokens=True
     )

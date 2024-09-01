@@ -4,12 +4,13 @@
 
 ---
 
-This repo is an implementation of the decoding mechanism described in Section 3.2 of [Grammar Prompting for Domain-Specific Language
+This repo is a slightly modified implementation of the decoding mechanism described in Section 3.2 of [Grammar Prompting for Domain-Specific Language
 Generation with Large Language Models](https://arxiv.org/pdf/2305.19234) by [@berlino](https://github.com/berlino). I refer to the general algorithm as **speculative grammar backtracking**.
 
-It is a form of (rather lenient) constrained decoding, and can be used to guide even proprietary, black-box LLM APIs according to some context-free grammar.
+It is a form of constrained decoding, and can be used to guide even proprietary, black-box LLM APIs according to some context-free grammar. It's rooted in the idea that as LLMs get better, not *all* steps of the decoding process need to apply a strict logit mask - like a good teacher, we let the student give an answer, and only intervene and correct when necessary.
 
-
+When using local Transformer models, we can efficiently backtrack the KV cache according to a given Lark CFG. Below is a benchmark showing tokens/sec when generating a JSON object with [10, 20, 30, 40] keys using [HuggingFaceTB/SmolLM-135M](https://huggingface.co/HuggingFaceTB/SmolLM-135M) on my Macbook M1.
+![naive-vs-grammar-guide](img/naive-vs-gg.png)
 ### Features
 - Compatible with *any* text generation function
   - OpenAI, Anthropic etc. - as long as you can provide some `generate(prompt: str) -> str` function!
@@ -31,18 +32,18 @@ import grammar_guide as gg
 model_name_or_path = "HuggingFaceTB/SmolLM-135M"
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-parser = gg.load_parser(lark_grammar_filepath="../grammars/json.lark")
+parser = gg.load_parser(lark_grammar_filepath="../grammars/string_only_json.lark")
 
 res = gg.guide(
-  model,
+  draft_model=model,
   tokenizer=tokenizer,
   parser=parser,
   prompt="Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n",
-  draft_model=guidance.models.Transformers(
+  target_model=guidance.models.Transformers(
       model_name_or_path, echo=False
   ),
   stop_at=['```'],
-  max_new_tokens=20,
+  token_lookahead=20,
   max_grammar_corrections=20,
   temperature=0.0
 )
@@ -65,28 +66,38 @@ import guidance
 import grammar_guide as gg
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-parser = gg.load_parser(lark_grammar_filepath="../grammars/json.lark")
+parser = gg.load_parser("../grammars/sql.lark")
 
 # Define our core completion predict function
 # This just needs to follow the `fn(s: str) -> str` contract
 #   so we can use any black-box API provider.
-def openai_generate(s: str) -> str:
-    chat_completion = client.chat.completions.create(
-        messages=[
+def openai_generate(prefix: str, prompt: str, max_new_tokens: int) -> str:
+    messages = [
+        {
+            "role": "system",
+            "content": prompt
+        }
+    ]
+    if prefix:
+        messages += [
             {
                 "role": "assistant",
-                "content": s,
+                "content": prefix
             }
-        ],
-        model="gpt-3.5-turbo",
+        ]
+    chat_completion = client.chat.completions.create(
+        messages=messages,
+        model="gpt-4o-mini",
+        max_tokens=max_new_tokens,
+        temperature=0.0
     )
     return chat_completion.choices[0].message.content
 
 res = gg.guide(
-    model=openai_generate,
+    draft_model=openai_generate,
     parser=parser,
     prompt="Here's a long, complex SQL query: ",
-    draft_model=guidance.models.Transformers(
+    target_model=guidance.models.Transformers(
         "HuggingFaceTB/SmolLM-135M", echo=False
     ),
     max_grammar_corrections=20,
@@ -96,7 +107,26 @@ res = gg.guide(
 
 ## Documentation
 
-As described in the paper, one way many existing libraries achieve this goal is by enforcing some constraint at each decoding timestep. For local models, it is possible to pre-process the logit masks such that this is relatively efficient. However, for closed models (think OpenAI, Anthropic, etc.), this can be 'prohitively expensive', since it would require calling the API at each timestep with the full prompt and valid continuation tokens.
+All calls to `gg.guide` take the following arguments. When `draft_model` is of type `AutoModelForCausalLM`, we have a bit of extra control, hence the 'Transformers only' arguments.
+
+| Argument | Type | Description |
+|----------|------|-------------|
+| `draft_model` | `Union[AutoModelForCausalLM, Callable[[str], str]]` | A transformer model or callable to use for text generation. |
+| `tokenizer` | `AutoTokenizer` | Transformers only, the tokenizer associated with the model. |
+| `parser` | `EarleyParser` | The parser used for grammar checking. |
+| `prompt` | `str` | The initial prompt for text generation. |
+| `target_model` | `guidance.models.Model` | The guidance model to use for constrained grammar correction. See [guidance-ai/guidance](https://github.com/guidance-ai/guidance) |
+| `seed_str` | `Optional[str]` | An optional seed string to start the generation. |
+| `max_grammar_corrections` | `int` | Maximum number of grammar corrections to attempt. |
+| `stop_at` | `Collection[str]` | Collection of strings to stop generation at. |
+| `token_healing` | `Optional[bool]` | Transformers only, whether to use token healing during generation. |
+| `top_p` | `float` | Transformers only, the cumulative probability for top-p sampling. |
+| `temperature` | `float` | Transformers only, the temperature for controlling randomness in generation. |
+| `token_lookahead` | `int` | Maximum number of new tokens to generate using draft model. Essentially the $K$ parameter in speculative decoding. |
+| `save_html` | `bool` | Whether to save the generation process as HTML. |
+| `verbose` | `bool` | Whether to print verbose output. |
+| `debug` | `bool` | Whether to run in debug mode with additional checks. |
+As described in [the paper](https://arxiv.org/pdf/2305.19234), one way many existing libraries achieve constrained decoding is by enforcing some constraint at each decoding timestep. For local models, it is possible to pre-process the logit masks such that this is relatively efficient. However, for closed models (think OpenAI, Anthropic, etc.), this can be 'prohitively expensive', since it would require calling the API at each timestep with the full prompt and valid continuation tokens.
 
 Instead, this library takes an optimistic approach to constrained decoding. Autoregressive language models are only going to get better, and often times the overhead of strict, mask-driven constrained decoding isn't worth it.
 
@@ -128,15 +158,11 @@ main_model.predict(prefix + selected_candidate)
 
 
 ### Benchmarks
-The below benchmarks are done on a single A100, with the command `python -m examples.benchmarks.run`.
+The below benchmarks are done on my Macbook M1, with the command `python -m examples.benchmarks.run`.
 
-They measure the time it takes the respective methods to generate a JSON with exactly 10 string key-value pairs, using [HuggingFaceTB/SmolLM-360M](https://huggingface.co/HuggingFaceTB/SmolLM-360M) and the below prompt.
-> Here is a really long JSON object, with 10 keys, using only string values:\n\n```json\n
+They measure the tokens/sec for the respective methods to generate a JSON with exactly *n* string key-value pairs, using [HuggingFaceTB/SmolLM-135M](https://huggingface.co/HuggingFaceTB/SmolLM-135M) and the below prompt.
+> Here is a JSON object, with {n} keys, using only string values:\n\n```json\n
 
 For most general usecases when using local Transformers models, I highly recommend the library [transformers-CFG](https://github.com/epfl-dlab/transformers-CFG)!
 
-| Name                                           |   Time Elapsed |   Generation Time |   Tokens Per Second |
-|:-----------------------------------------------|---------------:|------------------:|--------------------:|
-| Speculative Grammar Backtracking (Optimized)   |        6.10101 |           5.93353 |            15.5051  |
-| Speculative Grammar Backtracking (Naive) |       10.505   |          10.4947  |             9.43337 |
-| Transformers CFG                               |        5.67131 |           4.90689 |            22.0099  |
+![runtime-benchmark](img/runtime-lineplot.png)
