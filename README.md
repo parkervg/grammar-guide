@@ -19,6 +19,9 @@ When using local Transformer models, we can efficiently backtrack the KV cache a
 - Visualization and logging of grammar corrections
 - Token healing to ensure high probability continuations
 
+```
+pip install grammar-guide
+```
 ## Examples
 
 ### With Transformer Models
