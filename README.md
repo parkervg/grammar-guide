@@ -23,6 +23,9 @@ When using local Transformer models, we can efficiently backtrack the KV cache a
 pip install grammar-guide
 ```
 ## Examples
+- [With Anthropic](./examples/anthropic-gg.ipynb)
+- [With OpenAI](./examples/openai-gg.ipynb)
+- [With Transformers](./examples/transformers-gg.ipynb)
 
 ### With Transformer Models
 When using HuggingFace Transformer models, we get an extra speed boost by leveraging efficient caching and backtracking of the KV cache. When a grammar correction is made, we backtrack to the state of the KV cache aligned to the longest prefix that is valid under our Lark context-free grammar.
