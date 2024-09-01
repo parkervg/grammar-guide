@@ -32,7 +32,7 @@ dependencies = [
     "pygtrie",
     "ipython",
 ]
-dynamic = ["version"]
+version = "0.0.01"
 
 [project.urls]
 Documentation = "https://github.com/parkervg/grammar-guide"
