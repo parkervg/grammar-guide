@@ -1,0 +1,10 @@
+?start: object
+
+object : "{" [pair ("," pair)~4] "}"
+pair   : string ":" string
+
+inner: /([^"]|\\\")+/ |
+string : "\"" inner "\""
+
+%import common.WS
+%ignore WS

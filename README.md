@@ -32,13 +32,13 @@ import grammar_guide as gg
 model_name_or_path = "HuggingFaceTB/SmolLM-135M"
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-parser = gg.load_parser(lark_grammar_filepath="../grammars/string_only_json.lark")
+parser = gg.load_parser("../grammars/json_five_values_string_only.lark")
 
 res = gg.guide(
   draft_model=model,
   tokenizer=tokenizer,
   parser=parser,
-  prompt="Here is a really long, nested JSON that extracts fields from this sentence:\n\nMy name is Joseph Smith, and I work at Apple. I'm 32 years old, and my interests include kayaking, skiing, snowboarding, and woodworking.\n\n```json\n",
+  prompt="Here's a JSON object with only string values:",
   target_model=guidance.models.Transformers(
       model_name_or_path, echo=False
   ),
@@ -66,7 +66,7 @@ import guidance
 import grammar_guide as gg
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-parser = gg.load_parser("../grammars/sql.lark")
+parser = gg.load_parser("../grammars/json_five_values_string_only.lark")
 
 # Define our core completion predict function
 # This just needs to follow the `fn(s: str) -> str` contract
@@ -96,7 +96,7 @@ def openai_generate(prefix: str, prompt: str, max_new_tokens: int) -> str:
 res = gg.guide(
     draft_model=openai_generate,
     parser=parser,
-    prompt="Here's a long, complex SQL query: ",
+    prompt="Here's a JSON object with only string values:",
     target_model=guidance.models.Transformers(
         "HuggingFaceTB/SmolLM-135M", echo=False
     ),
@@ -126,6 +126,7 @@ All calls to `gg.guide` take the following arguments. When `draft_model` is of t
 | `save_html` | `bool` | Whether to save the generation process as HTML. |
 | `verbose` | `bool` | Whether to print verbose output. |
 | `debug` | `bool` | Whether to run in debug mode with additional checks. |
+
 As described in [the paper](https://arxiv.org/pdf/2305.19234), one way many existing libraries achieve constrained decoding is by enforcing some constraint at each decoding timestep. For local models, it is possible to pre-process the logit masks such that this is relatively efficient. However, for closed models (think OpenAI, Anthropic, etc.), this can be 'prohitively expensive', since it would require calling the API at each timestep with the full prompt and valid continuation tokens.
 
 Instead, this library takes an optimistic approach to constrained decoding. Autoregressive language models are only going to get better, and often times the overhead of strict, mask-driven constrained decoding isn't worth it.
