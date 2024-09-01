@@ -5,7 +5,7 @@
 
 root   ::= object
 
-object ::= "{" ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "," ws string ":" ws string "}"
+object ::= "{" ws string ":" ws string $REPEATED_STRING_VALUES "}"
 
 string ::= "\"" [ \t!#-\[\]-~]+ "\"" ws
 
