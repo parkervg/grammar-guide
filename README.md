@@ -63,6 +63,10 @@ In the visualization below:
 
 ![jupyer-visualization](img/jupyter-example.png)
 
+Below is a (slowed down) example using streaming on your terminal.
+
+![gg-gif](img/grammar-guide-recording.gif)
+
 ### With General API-based Providers
 ```python
 import os
