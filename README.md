@@ -150,19 +150,21 @@ print(prefix)
 print(candidates)
 # ['IN', '>', '=', 'NOT', 'BETWEEN', 'LIKE', ...]
 ```
-Once we have a list of candidates, we can use our draft model to select a valid continuation. In the above example, our candidates are fairly simple strings. However, our grammar may define regular expression continuations as well (e.g. `(?:(?:[A-Z]|[a-z])|_)(?:(?:(?:[A-Z]|[a-z])|[0-9]|_))*`).
+Once we have a list of candidates, we can use our target model to select a valid continuation. In the above example, our candidates are fairly simple strings. However, our grammar may define regular expression continuations as well (e.g. `(?:(?:[A-Z]|[a-z])|_)(?:(?:(?:[A-Z]|[a-z])|[0-9]|_))*`).
 This is powered by the library [guidance](https://github.com/guidance-ai/guidance).
 
-Once the draft model has selected a valid continuation, we are free to pass the new prefix back to the main lanugage model to complete the prediction.
+Once the target model has selected a valid continuation, we are free to pass the new prefix back to the draft lanugage model to complete the prediction.
 
 ```python
-selected_candidate = choose_candidate(candidates, prefix, draft_model)
+selected_candidate = choose_candidate(candidates, prefix, target_model)
 print(selected_candidate)
 # 'LIKE'
 # Now, pass back to the main model to continue its prediction from this new breakpoint
-main_model.predict(prefix + selected_candidate)
+draft_model.predict(prefix + selected_candidate)
 ```
 
+> [!'Draft' vs. 'Target' Model]
+> We borrow this terminology from one of the original speculative decoding papers [1](https://arxiv.org/pdf/2302.01318). However, in our case, we consider the model constrained by the grammar which generates very small bits of text to be the 'target' model, since these generations will always be accepted. The draft model, then, is the often larger model that generates unconstrained up until we tell it to stop (governed by the `token_lookahead` parameter)
 
 ### Benchmarks
 The below benchmarks are done on my Macbook M1, with the command `python -m examples.benchmarks.run`.
