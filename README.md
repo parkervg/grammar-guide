@@ -40,7 +40,7 @@ import grammar_guide as gg
 model_name_or_path = "HuggingFaceTB/SmolLM-135M"
 model = AutoModelForCausalLM.from_pretrained(model_name_or_path)
 tokenizer = AutoTokenizer.from_pretrained(model_name_or_path)
-parser = gg.load_parser("../grammars/json_five_values_string_only.lark")
+parser = gg.load_parser(open("../grammars/json_five_values_string_only.lark").read())
 
 res = gg.guide(
   draft_model=model,
@@ -76,7 +76,7 @@ import guidance
 import grammar_guide as gg
 
 client = OpenAI(api_key=os.environ.get("OPENAI_API_KEY"))
-parser = gg.load_parser("../grammars/json_five_values_string_only.lark")
+parser = gg.load_parser(open("../grammars/json_five_values_string_only.lark").read())
 
 # Define our core completion predict function
 # This just needs to follow the `fn(s: str) -> str` contract
