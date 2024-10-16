@@ -32,13 +32,13 @@ dependencies = [
     "pygtrie",
     "ipython",
 ]
-version = "0.0.01"
+version = "0.0.02"
 
 [project.urls]
 Documentation = "https://github.com/parkervg/grammar-guide"
 
-[tool.setuptools]
-packages = ["grammar_guide"]
+[tool.setuptools.packages.find]
+exclude=["examples*", "grammars*", "img*", "tests*"]
 
 [tool.black]
 line-length = 88
